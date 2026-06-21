@@ -1,0 +1,6 @@
+{
+  "name": "biton Web Compiler",
+  "description": "A web-based interactive compiler, visual output canvas, and smart AI debugger for the pre-alpha scripting language biton.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
