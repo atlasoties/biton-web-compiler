@@ -1,62 +1,31 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# biton-web-compiler
 
-# Biton Web Editor - Pre-Alpha Compiler Interface
-
-A web-based IDE for the pre-alpha programming language "biton" with integrated visual canvas rendering, AI assistance via Gemini, and real-time compilation feedback.
+A web-based IDE and compiler for the pre-alpha programming language **biton**. Server-side lexer/parser/interpreter with a React frontend, HTML5 canvas rendering, and optional Gemini AI assistance.
 
 ## Features
 
-- **Code Editor**: Custom syntax-highlighted editor for biton language with line numbers and undo/redo support
-- **Visual Canvas**: 320x320 pixel HTML5 canvas renderer for biton graphics (draw circles, rectangles, lines, text)
-- **Live Compilation**: Server-side compile API with error diagnostics
-- **AI Assistant**: Gemini-powered code explanation, error fixing, and code generation
-- **Terminal Console**: Interactive shell with command history and output display
-- **Demo Scripts**: Pre-loaded examples including animations and visual demos
+- **Server-side compilation** — lexer, recursive-descent parser, and tree-walk interpreter (`src/compiler/aether.ts`)
+- **Syntax-highlighted editor** — custom overlay editor with line numbers, undo/redo, and block-comment highlighting
+- **Live canvas preview** — 320×320 HTML5 canvas renderer for `canvas.*` drawing primitives
+- **Interactive terminal** — shell commands (`run`, `vars`, `sys.help`, `clear`) with history
+- **AI Assistant** — Gemini-powered code explanation, error auto-fix, and code generation
+- **Demo playground** — pre-loaded scripts showcasing animations, graphics, and math
 
-## Run Locally
+## Language support
 
-**Prerequisites:** Node.js
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
-
-## Available Scripts
-
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run start` - Run production server
-- `npm run lint` - Run TypeScript type check
-
-## Biton Language Syntax
-
-```
-let x = 10;                    // Variable declaration
-fn add(a, b) {                 // Function declaration
-  return a + b;
-}
-if (x > 10) { ... }            // Conditional
-else if (x > 5) { ... }        // Else-if chain
-else { ... }                    // Fallback branch
-while (x < 100) {              // Loop
-  if (x == 50) { break; }      // Early exit
-  if (x % 2 == 0) { continue; } // Skip iteration
-  x = x + 1;
-}
-return value;                   // Return from function
-print("Hello");                  // Output
-```
-
-Block comments are supported:
-```
-/* This is a multi-line
-   block comment */
-let x = -5;                    // Unary minus supported
-```
+| Feature | Syntax |
+|---|---|
+| Variables | `let name = value;` |
+| Functions | `fn name(a, b) { return a + b; }` |
+| Conditionals | `if (x) { } else if (x) { } else { }` |
+| Loops | `while (x) { break; continue; }` |
+| Returns | `return value;` |
+| Comments | `// line` and `/* block */` |
+| Unary | `-x` |
+| Print | `print("hello", x);` |
+| Math | `math.pi`, `math.sin`, `math.cos`, `math.abs`, `math.sqrt`, `math.floor`, `math.ceil`, `math.random` |
+| System | `sys.time()`, `sys.help()` |
+| Canvas | `canvas.clear(color)`, `canvas.circle`, `canvas.rect`, `canvas.line`, `canvas.text` |
 
 ## Canvas API
 
@@ -68,8 +37,32 @@ canvas.line(x1, y1, x2, y2, strokeWidth, color);
 canvas.text("text", x, y, size, color);
 ```
 
-## Math API
+## Run locally
 
-```
-math.pi, math.sin(x), math.cos(x), math.random(), math.abs(x)
-```# biton-web-compiler
+**Prerequisites:** Node.js
+
+1. Install dependencies:
+   ```
+   npm install
+   ```
+2. (Optional) Set `GEMINI_API_KEY` in `.env.local` to enable AI features.
+3. Start the dev server:
+   ```
+   npm run dev
+   ```
+4. Open `http://localhost:3000`
+
+## Available scripts
+
+- `npm run dev` — start development server (Vite + Express)
+- `npm run build` — production build
+- `npm run start` — run production server
+- `npm run lint` — TypeScript type check (`tsc --noEmit`)
+
+## Architecture
+
+- `src/compiler/aether.ts` — lexer, parser, interpreter, AST node types
+- `src/compiler/types.ts` — shared token/symbol/environment types
+- `server.ts` — Express API (`/api/compile`, `/api/gemini/explain`, `/api/gemini/fix-error`, `/api/gemini/generate`)
+- `src/App.tsx` — main React UI (editor, terminal, canvas, AI panels)
+- `src/components/` — editor, sidebar, header/footer, visualizer, right panel
