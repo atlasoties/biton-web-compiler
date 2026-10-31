@@ -1,0 +1,76 @@
+# Production layout:
+#
+#   internet ──▶ web :8080 ──(internal network)──▶ worker :9000
+#
+# The worker is attached only to an internal network, so jobs have no
+# internet access (the worker refuses to start if they would).
+#
+#   scripts/stage-compiler.sh ../biton
+#   echo "WORKER_TOKEN=$(openssl rand -hex 32)" > .env
+#   docker compose up -d --build
+#
+# Stronger isolation: install gVisor and set WORKER_RUNTIME=runsc in .env.
+
+services:
+  web:
+    build: { context: ., target: web }
+    image: biton-web:latest
+    restart: unless-stopped
+    init: true
+    ports: ["${PUBLISH:-127.0.0.1:8080}:8080"]
+    environment:
+      WORKER_URL: http://worker:9000
+      WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN in .env}
+      CORS_ORIGIN: ${CORS_ORIGIN:-}
+      CACHE_MB: ${CACHE_MB:-64}
+      # Number of reverse proxies in front of this container (your TLS proxy = 1).
+      # Wrong values either merge all clients into one limit (too low) or let
+      # clients spoof X-Forwarded-For (too high).
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      RATE_RUN_PER_MIN: ${RATE_RUN_PER_MIN:-20}
+      RATE_RUN_BURST: ${RATE_RUN_BURST:-10}
+      RATE_CHECK_PER_MIN: ${RATE_CHECK_PER_MIN:-120}
+      RATE_CHECK_BURST: ${RATE_CHECK_BURST:-40}
+      RATE_MAX_INFLIGHT: ${RATE_MAX_INFLIGHT:-3}
+    networks: [public, jobs]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 64
+    depends_on:
+      worker: { condition: service_healthy }
+
+  worker:
+    build: { context: ., target: worker }
+    image: biton-worker:latest
+    restart: unless-stopped
+    # tini as PID 1 reaps the orphaned processes jobs leave behind.
+    init: true
+    runtime: ${WORKER_RUNTIME:-runc}
+    environment:
+      WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN in .env}
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
+      MAX_QUEUE: ${MAX_QUEUE:-32}
+      RUN_TIMEOUT_MS: ${RUN_TIMEOUT_MS:-5000}
+      RUN_MEMORY_MB: ${RUN_MEMORY_MB:-256}
+      JOB_MAX_PROCS: ${JOB_MAX_PROCS:-32}
+    networks: [jobs]
+    read_only: true
+    tmpfs:
+      - /jobs:exec,size=512m,mode=711
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    # Only what running jobs as other uids and cleaning up after them needs.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: ${WORKER_MEMORY:-2g}
+    cpus: ${WORKER_CPUS:-2}
+    pids_limit: ${WORKER_PIDS:-256}
+    ulimits:
+      core: 0
+
+networks:
+  public: {}
+  jobs:
+    internal: true

@@ -1,235 +1,277 @@
-import { FileCode, Database, Download, Upload } from "lucide-react";
-import React from "react";
+import { useState } from "react";
+import { BookOpen, Download, FileCode, Library, Upload } from "lucide-react";
+
+import type { Demo } from "../../demos";
+import { highlight } from "../../lib/highlight";
+
+type Tab = "examples" | "reference" | "stdlib";
 
 interface SidebarProps {
-  activeTab: "snippets" | "state" | "cheatsheet";
-  setActiveTab: (tab: "snippets" | "state" | "cheatsheet") => void;
-  DEMO_SCRIPTS: Record<string, { title: string; desc: string; code: string }>;
-  loadDemo: (key: keyof SidebarProps["DEMO_SCRIPTS"]) => void;
-  updateCodeWithHistory: (code: string, immediate: boolean) => void;
-  addTerminalRow: (type: "cmd" | "out" | "err" | "sys", text: string) => void;
-  environmentVariables: any[];
-  errors: any[];
+  demos: Record<string, Demo>;
+  loadDemo: (key: string) => void;
   downloadCode: () => void;
+  uploadCode: (name: string, text: string) => void;
 }
 
-export default function Sidebar({
-  activeTab,
-  setActiveTab,
-  DEMO_SCRIPTS,
-  loadDemo,
-  updateCodeWithHistory,
-  addTerminalRow,
-  environmentVariables,
-  errors,
-  downloadCode,
-}: SidebarProps) {
+// Language reference, following ../biton/README.md and grammar/biton.bnf.
+const REFERENCE: Array<{ title: string; items: Array<{ code: string; note?: string }> }> = [
+  {
+    title: "Variables",
+    items: [
+      { code: "def x: int = 10;", note: "mutable, explicit type" },
+      { code: "def pi = 3.14159;", note: "inferred (double)" },
+      { code: "fix LIMIT: int = 100;", note: "immutable" },
+      { code: "def p: Point;", note: "zero-initialised" },
+    ],
+  },
+  {
+    title: "Functions",
+    items: [
+      { code: "def add(a: int, b: int) => int {\n    give a + b;\n}", note: "give returns a value" },
+      { code: "def log(msg: string) { }", note: "no return type" },
+      { code: "def main() => int { give 0; }", note: "exit code of the program" },
+      { code: "draw(x: 10, y: 20);", note: "named arguments" },
+    ],
+  },
+  {
+    title: "Control flow",
+    items: [
+      { code: "if x > 0 { } elif x < 0 { } else { }" },
+      { code: "while i < 10 { i += 1; }" },
+      { code: "for (def i: int = 0; i < n; i += 1) { }" },
+      { code: "loop { exit; }", note: "exit/break, redo/continue" },
+      { code: "outer: while true { break outer; }", note: "labelled loops" },
+      { code: "when x {\n    1, 2, 3 -> give \"small\";\n    4..9    -> give \"medium\";\n    else    -> give \"large\";\n}" },
+    ],
+  },
+  {
+    title: "Types",
+    items: [
+      { code: "int  i8 i16 i32 i64  u8 u16 u32 u64", note: "int is 32-bit signed" },
+      { code: "double  float  bool  char  string  any" },
+      { code: "~int", note: "pointer" },
+      { code: "int[10]  int[3][4]  int[]", note: "array, 2-D array, slice" },
+      { code: "(int, bool)", note: "tuple; (a, b) = t;" },
+      { code: "(int) -> int", note: "function type" },
+      { code: "x as i64", note: "cast" },
+    ],
+  },
+  {
+    title: "Kinds, enums & unions",
+    items: [
+      { code: "kind Point { x: int, y: int };" },
+      { code: "def q = Point { x: 1, y: 2 };" },
+      { code: "impl Point {\n    def len2(self) => int {\n        give self.x * self.x + self.y * self.y;\n    }\n};", note: "self is a pointer to the receiver" },
+      { code: "enum Color { Red, Green = 5, Blue };" },
+      { code: "union Shape { Circle: double, Box: Rect };" },
+      { code: "Shape::Circle as r -> give r * r;", note: "when arm with binding" },
+      { code: "~>copy kind V { x: int };", note: "copied instead of moved" },
+    ],
+  },
+  {
+    title: "Generics & lambdas",
+    items: [
+      { code: "def id[T](x: T) => T { give x; }" },
+      { code: "id<i64>(5)", note: "explicit type argument" },
+      { code: "kind Cell[T] { value: T };", note: "Cell<int> { value: 3 }" },
+      { code: "def f = |x: int| => int { give x * 2; };", note: "captures by value" },
+    ],
+  },
+  {
+    title: "Pointers, unsafe & defer",
+    items: [
+      { code: "def p: ~int = ref x;", note: "address-of" },
+      { code: "unsafe { p~ = 99; }", note: "dereference only in unsafe" },
+      { code: "unsafe { def y = p[2]; }", note: "pointer indexing" },
+      { code: "defer x = 100;", note: "runs on scope exit, LIFO" },
+      { code: "sizeof(int)  alignof(i64)  lengthof(xs)" },
+    ],
+  },
+  {
+    title: "Modules",
+    items: [
+      { code: "import std;", note: "then std::println_str(...)" },
+      { code: "import std::{println_str, println_int};" },
+      { code: "import std::math as m;" },
+      { code: "pub def area() => int { give 0; }", note: "exported" },
+      { code: "// line   /* nestable block */" },
+    ],
+  },
+];
+
+// Mirrors ../biton/lib/*.bit.
+const STDLIB: Array<{ module: string; import: string; items: string[] }> = [
+  {
+    module: "std",
+    import: "import std::{println_str, println_int};",
+    items: [
+      "print_str(s: string)",
+      "println_str(s: string)",
+      "print_int(v: int)",
+      "println_int(v: int)",
+      "print_bool(b: bool)",
+      "println()",
+    ],
+  },
+  {
+    module: "std::math",
+    import: "import std::math::{max, min};",
+    items: [
+      "abs(x: int) => int",
+      "max(a: int, b: int) => int",
+      "min(a: int, b: int) => int",
+      "clamp(x: int, lo: int, hi: int) => int",
+      "pow(base: int, exp: int) => int",
+      "gcd(a: int, b: int) => int",
+    ],
+  },
+  {
+    module: "std::strings",
+    import: "import std::strings::{length};",
+    items: [
+      "length(s: string) => int",
+      "is_empty(s: string) => bool",
+      "byte_at(s: string, i: int) => int",
+      "starts_with(s: string, prefix: string) => bool",
+    ],
+  },
+  {
+    module: "std::collections",
+    import: "import std::collections::{Buf, buf_push};",
+    items: ["kind Buf[T]   // capacity 16", "buf_push(b: ~Buf<T>, v: T) => bool", "buf_get(b: ~Buf<T>, i: int) => T", "buf_len(b: ~Buf<T>) => int"],
+  },
+  {
+    module: "std::box",
+    import: "import std::box::{Box, box, unbox};",
+    items: ["kind Box[T]   // owned heap value", "box(v: T) => Box<T>", "unbox(b: Box<T>) => T", "b.ptr() => ~T", "b.set(v: T)"],
+  },
+  {
+    module: "std::mem",
+    import: "import std::mem::{alloc, release};",
+    items: ["alloc[T]() => ~T   // alloc<int>()", "release(p: ~T)", "replace(dst: ~T, v: T) => T"],
+  },
+];
+
+function Code({ src }: { src: string }) {
+  return <pre className="font-mono text-[11px] leading-6 whitespace-pre-wrap break-words">{highlight(src)}</pre>;
+}
+
+export default function Sidebar({ demos, loadDemo, downloadCode, uploadCode }: SidebarProps) {
+  const [tab, setTab] = useState<Tab>("examples");
+  const tabs: Array<[Tab, string]> = [
+    ["examples", "Examples"],
+    ["reference", "Language"],
+    ["stdlib", "Stdlib"],
+  ];
+
   return (
-    <>
-      <aside className="w-56 bg-[#051139] border-r border-[#6d5f50]/40 flex flex-col shrink-0" id="explorer-sidebar">
-        {/* Sidebar Segment Tabs */}
-        <div className="flex border-b border-[#6d5f50]/35 p-1 bg-[#0c122a] gap-1 shrink-0">
-          <button 
-            onClick={() => setActiveTab("snippets")}
-            className={`flex-1 py-1.5 rounded text-[11px] font-bold uppercase tracking-wider text-center transition-all ${activeTab === "snippets" ? "bg-[#051139] text-[#fec153] border-b-2 border-[#fec153] shadow-sm" : "text-zinc-500 hover:text-zinc-300"}`}
-            id="sidebar-tab-snippets"
+    <aside className="w-72 bg-[#051139] border-r border-[#6d5f50]/40 flex flex-col shrink-0">
+      <div className="flex border-b border-[#6d5f50]/35 p-1 bg-[#0c122a] gap-1 shrink-0">
+        {tabs.map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={`flex-1 py-1.5 rounded text-[11px] font-bold uppercase tracking-wider text-center transition-all ${
+              tab === key ? "bg-[#051139] text-[#fec153] border-b-2 border-[#fec153]" : "text-[#fcd389]/60 hover:text-[#fcd389]"
+            }`}
           >
-            Files
+            {label}
           </button>
-          <button 
-            onClick={() => setActiveTab("state")}
-            className={`flex-1 py-1.5 rounded text-[11px] font-bold uppercase tracking-wider text-center transition-all ${activeTab === "state" ? "bg-[#051139] text-[#fec153] border-b-2 border-[#fec153] shadow-sm" : "text-zinc-500 hover:text-zinc-300"}`}
-            id="sidebar-tab-state"
-          >
-            Env Variables
-          </button>
-          <button 
-            onClick={() => setActiveTab("cheatsheet")}
-            className={`flex-1 py-1.5 rounded text-[11px] font-bold uppercase tracking-wider text-center transition-all ${activeTab === "cheatsheet" ? "bg-[#051139] text-[#fec153] border-b-2 border-[#fec153] shadow-sm" : "text-zinc-500 hover:text-zinc-300"}`}
-            id="sidebar-tab-cheatsheet"
-          >
-            Help API
-          </button>
-        </div>
+        ))}
+      </div>
 
-        <div className="flex-1 overflow-y-auto p-3 scrollbar-thin" id="explorer-content-container">
-          {activeTab === "snippets" && (
-            <div className="space-y-4">
-              <div>
-                <div className="text-[10px] font-extrabold text-zinc-500 uppercase tracking-widest mb-2 px-1">WORKSPACE SNIPPETS</div>
-                <nav className="space-y-1">
-                  {Object.entries(DEMO_SCRIPTS).map(([key, item]) => (
-                    <button
-                      key={key}
-                      onClick={() => loadDemo(key)}
-                      className="w-full text-left p-2 rounded transition-all group hover:bg-[#0c122a] flex items-start gap-2.5 border border-transparent hover:border-[#6d5f50]/40"
-                      id={`snippet-${key}`}
-                    >
-                      <FileCode className="w-4 h-4 text-[#fec153] mt-0.5 shrink-0 group-hover:scale-105 transition-transform" />
-                      <div>
-                        <div className="text-xs font-semibold text-white group-hover:text-[#ffa500] transition-colors">{item.title}</div>
-                        <div className="text-[10px] text-zinc-500 leading-tight mt-0.5 line-clamp-2">{item.desc}</div>
-                      </div>
-                    </button>
-                  ))}
-                </nav>
-              </div>
+      <div className="flex-1 overflow-y-auto p-3 scrollbar-thin">
+        {tab === "examples" && (
+          <div className="space-y-4">
+            <nav className="space-y-1">
+              {Object.entries(demos).map(([key, item]) => (
+                <button
+                  key={key}
+                  onClick={() => loadDemo(key)}
+                  className="w-full text-left p-2 rounded transition-all group hover:bg-[#0c122a] flex items-start gap-2.5 border border-transparent hover:border-[#6d5f50]/40"
+                >
+                  <FileCode className="w-4 h-4 text-[#fec153] mt-0.5 shrink-0" />
+                  <div>
+                    <div className="text-xs font-semibold text-white group-hover:text-[#ffa500] transition-colors">{item.title}</div>
+                    <div className="text-[10px] text-[#fcd389]/60 leading-tight mt-0.5">{item.desc}</div>
+                  </div>
+                </button>
+              ))}
+            </nav>
 
-              <div className="pt-3 border-t border-[#6d5f50]/30 animate-fade-in">
-                <div className="text-[10px] font-extrabold text-zinc-500 uppercase tracking-widest mb-2 px-1">Import/Export</div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button 
-                    onClick={downloadCode}
-                    className="flex items-center justify-center gap-1 py-1.5 px-2 bg-[#0c122a] hover:bg-[#0c122a]/70 text-zinc-400 hover:text-white rounded border border-[#6d5f50]/40 text-[10px] font-bold transition-all hover:border-[#ffa500]"
-                    id="btn-download-ae"
-                  >
-                    <Download className="w-3 h-3" />
-                    <span>Download</span>
-                  </button>
-                  <label 
-                    className="flex items-center justify-center gap-1 py-1.5 px-2 bg-[#0c122a] hover:bg-[#0c122a]/70 text-zinc-400 hover:text-white rounded border border-[#6d5f50]/40 text-[10px] font-bold cursor-pointer transition-all hover:border-[#ffa500]"
-                    id="btn-upload-ae"
-                  >
-                    <Upload className="w-3 h-3" />
-                    <span>Upload</span>
-                    <input 
-                      type="file" 
-                      accept=".bt,.txt,.biton" 
-                      className="hidden" 
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        const reader = new FileReader();
-                        reader.onload = (evt) => {
-                          if (evt.target?.result && typeof evt.target.result === "string") {
-                            updateCodeWithHistory(evt.target.result, true);
-                            addTerminalRow("sys", `Successfully loaded external file "${file.name}".`);
-                          }
-                        };
-                        reader.readAsText(file);
-                      }}
-                    />
-                  </label>
-                </div>
+            <div className="pt-3 border-t border-[#6d5f50]/30">
+              <div className="text-[10px] font-extrabold text-[#fcd389]/50 uppercase tracking-widest mb-2 px-1">File</div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={downloadCode}
+                  className="flex items-center justify-center gap-1 py-1.5 px-2 bg-[#0c122a] text-[#fcd389]/85 hover:text-white rounded border border-[#6d5f50]/40 text-[10px] font-bold transition-all hover:border-[#ffa500]"
+                >
+                  <Download className="w-3 h-3" />
+                  Download
+                </button>
+                <label className="flex items-center justify-center gap-1 py-1.5 px-2 bg-[#0c122a] text-[#fcd389]/85 hover:text-white rounded border border-[#6d5f50]/40 text-[10px] font-bold cursor-pointer transition-all hover:border-[#ffa500]">
+                  <Upload className="w-3 h-3" />
+                  Open .bit
+                  <input
+                    type="file"
+                    accept=".bit,text/plain"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (!file) return;
+                      file.text().then((text) => uploadCode(file.name, text));
+                    }}
+                  />
+                </label>
               </div>
+              <p className="text-[10px] text-[#fcd389]/45 mt-2 px-1 leading-relaxed">
+                The editor holds one module. Imports of your own modules are not available here; the standard library is.
+              </p>
             </div>
-          )}
+          </div>
+        )}
 
-          {activeTab === "state" && (
-            <div className="space-y-3">
-              <div className="text-[10px] font-extrabold text-zinc-500 uppercase tracking-widest px-1">BITON EVALUATOR MEMORY</div>
-              
-              {environmentVariables.length === 0 ? (
-                <div className="p-3 bg-[#0c122a] rounded border border-[#6d5f50]/30 text-center">
-                  <Database className="w-5 h-5 text-zinc-500 mx-auto mb-1.5" />
-                  <p className="text-[10px] text-zinc-500 leading-relaxed">No active scope variables. Run the compiler code to register dynamic symbols.</p>
+        {tab === "reference" && (
+          <div className="space-y-4">
+            {REFERENCE.map((section) => (
+              <div key={section.title}>
+                <div className="text-[10px] font-bold text-[#fcd389]/50 uppercase tracking-widest mb-2 px-1 flex items-center gap-1.5">
+                  <BookOpen className="w-3 h-3" />
+                  {section.title}
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  {environmentVariables.map((sym, index) => (
-                    <div 
-                      key={index}
-                      className="p-2 bg-[#0c122a] border border-[#6d5f50]/40 rounded flex flex-col gap-1 transition-all hover:bg-[#0c122a]/80"
-                      id={`symbol-card-${sym.name}`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono text-xs font-bold text-[#fec153]">{sym.name}</span>
-                        <span className="text-[9px] bg-[#ffa500]/10 text-[#ffa500] px-1 py-0.2 rounded font-mono uppercase shrink-0">
-                          {sym.type}
-                        </span>
-                      </div>
-                      <div className="font-mono text-[11px] text-zinc-300 truncate bg-[#051139] px-1.5 py-1 rounded">
-                        {typeof sym.value === "object" ? "[Internal API Object]" : String(sym.value)}
-                      </div>
+                <div className="space-y-1.5">
+                  {section.items.map((item, i) => (
+                    <div key={i} className="bg-[#0c122a] px-2 py-1 rounded border border-[#6d5f50]/20">
+                      <Code src={item.code} />
+                      {item.note && <div className="text-[10px] text-[#fcd389]/50 leading-tight pb-0.5">{item.note}</div>}
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === "cheatsheet" && (
-            <div className="space-y-4 text-xs">
-              <div>
-                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-2 px-1">LANGUAGE SYNTAX</span>
-                <div className="space-y-2 font-mono text-[11px]">
-                  <div className="bg-[#0c122a] p-2 rounded border border-[#6d5f50]/20 text-zinc-300">
-                    <span className="text-pink-400 font-semibold">let</span> x = <span className="text-orange-400">10</span>;
-                  </div>
-                  <div className="bg-[#0c122a] p-2 rounded border border-[#6d5f50]/20 text-zinc-300">
-                    <span className="text-pink-400 font-semibold">fn</span> add(a, b) {'{'}<br/>
-                    &nbsp;&nbsp;<span className="text-pink-400 font-semibold">return</span> a + b;<br/>
-                    {'}'}
-                  </div>
-                  <div className="bg-[#0c122a] p-2 rounded border border-[#6d5f50]/20 text-zinc-300">
-                    <span className="text-pink-400 font-semibold">if</span> (x &gt; 5) {'{'} ... {'}'}
-                  </div>
-                  <div className="bg-[#0c122a] p-2 rounded border border-[#6d5f50]/20 text-zinc-300">
-                    <span className="text-pink-400 font-semibold">while</span> (x &lt; 100) {'{'} x = x + 1; {'}'}
-                  </div>
-                  <div className="bg-[#0c122a] p-2 rounded border border-[#6d5f50]/20 text-zinc-300">
-                    <span className="text-pink-400 font-semibold">return</span> <span className="text-orange-400">value</span>;
-                  </div>
-                </div>
               </div>
-
-              <div className="pt-2 border-t border-[#6d5f50]/30">
-                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-2 px-1">BUILTIN APIS</span>
-                <div className="space-y-1 font-mono text-[10px] text-zinc-300">
-                  <div className="bg-[#0c122a] p-1.5 rounded border border-[#6d5f50]/20 truncate" title="print(values...)">
-                    <span className="text-emerald-400">print</span>(val, ...)
-                  </div>
-                  <div className="bg-[#0c122a] p-1.5 rounded border border-[#6d5f50]/20 truncate" title="math.pi">
-                    <span className="text-emerald-400">math.pi</span>, <span className="text-emerald-400">math.sin</span>(<span className="text-amber-300">x</span>), <span className="text-emerald-400">math.cos</span>(<span className="text-amber-300">x</span>)
-                  </div>
-                  <div className="bg-[#0c122a] p-1.5 rounded border border-[#6d5f50]/20 truncate" title="math.random">
-                    <span className="text-emerald-400">math.random</span>() | <span className="text-emerald-400">math.random</span>(min, max)
-                  </div>
-                  <div className="bg-[#0c122a] p-1.5 rounded border border-[#6d5f50]/20 truncate" title="sys.time()">
-                    <span className="text-emerald-400">sys.time</span>() - timestamp in ms
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-2 border-t border-[#6d5f50]/30">
-                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-2 px-1">CANVAS API</span>
-                <div className="space-y-1 font-mono text-[10px] text-zinc-300">
-                  <div className="bg-[#0c122a] p-1.5 rounded border border-[#6d5f50]/20 truncate" title="canvas.clear(color)">
-                    <span className="text-emerald-400">canvas.clear</span>(<span className="text-amber-300">"#080a14"</span>)
-                  </div>
-                  <div className="bg-[#0c122a] p-1.5 rounded border border-[#6d5f50]/20 truncate" title="canvas.circle(x, y, radius, color)">
-                    <span className="text-emerald-400">canvas.circle</span>(<span className="text-amber-300">x</span>, <span className="text-amber-300">y</span>, <span className="text-amber-300">r</span>, <span className="text-amber-300">c</span>)
-                  </div>
-                  <div className="bg-[#0c122a] p-1.5 rounded border border-[#6d5f50]/20 truncate" title="canvas.rect(x, y, wid, hgt, color)">
-                    <span className="text-emerald-400">canvas.rect</span>(<span className="text-amber-300">x</span>, <span className="text-amber-300">y</span>, <span className="text-amber-300">w</span>, <span className="text-amber-300">h</span>, <span className="text-amber-300">c</span>)
-                  </div>
-                  <div className="bg-[#0c122a] p-1.5 rounded border border-[#6d5f50]/20 truncate" title="canvas.line(x1, y1, x2, y2, weight, color)">
-                    <span className="text-emerald-400">canvas.line</span>(<span className="text-amber-300">x1</span>,<span className="text-amber-300">y1</span>, <span className="text-amber-300">x2</span>,<span className="text-amber-300">y2</span>, <span className="text-amber-300">w</span>, <span className="text-amber-300">c</span>)
-                  </div>
-                  <div className="bg-[#0c122a] p-1.5 rounded border border-[#6d5f50]/20 truncate" title="canvas.text(txt, x, y, size, color)">
-                    <span className="text-emerald-400">canvas.text</span>(<span className="text-amber-300">txt</span>, <span className="text-amber-300">x</span>, <span className="text-amber-300">y</span>, <span className="text-amber-300">s</span>, <span className="text-amber-300">c</span>)
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Project Health meter matching design spec */}
-        <div className="p-4 bg-[#0c122a] border-t border-[#6d5f50]/30" id="project-health-panel">
-          <div className="text-[10px] text-zinc-500 mb-1.5 uppercase tracking-wider font-mono font-bold">PROJECT COMPILE HEALTH</div>
-          <div className="flex items-center gap-2">
-            <div className="w-full bg-[#051139] h-2 rounded-full overflow-hidden border border-[#6d5f50]/20">
-              <div 
-                className={`h-full rounded-full transition-all duration-300 ${errors.length > 0 ? "bg-red-500 w-[30%]" : "bg-emerald-500 w-[100%]"}`} 
-              />
-            </div>
-            <span className="text-[10px] font-mono font-bold text-zinc-400">
-              {errors.length > 0 ? "30%" : "100%"}
-            </span>
+            ))}
           </div>
-        </div>
-      </aside>
-    </>
+        )}
+
+        {tab === "stdlib" && (
+          <div className="space-y-4">
+            {STDLIB.map((m) => (
+              <div key={m.module}>
+                <div className="text-[10px] font-bold text-[#fec153] uppercase tracking-widest mb-1.5 px-1 flex items-center gap-1.5 font-mono">
+                  <Library className="w-3 h-3" />
+                  {m.module}
+                </div>
+                <div className="bg-[#0c122a] px-2 py-1 rounded border border-[#6d5f50]/20 mb-1.5">
+                  <Code src={m.import} />
+                </div>
+                <div className="bg-[#0c122a] px-2 py-1 rounded border border-[#6d5f50]/20">
+                  <Code src={m.items.join("\n")} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </aside>
   );
 }

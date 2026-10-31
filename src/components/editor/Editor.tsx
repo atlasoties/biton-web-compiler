@@ -1,96 +1,53 @@
-import EditorHeader from "./EditorHeader";
-import CodeEditor from "./CodeEditor";
-import Terminal from "./Terminal";
-import { useRef } from "react";
 import React from "react";
 
+import EditorHeader from "./EditorHeader";
+import CodeEditor from "./CodeEditor";
+import Terminal, { type TerminalRow } from "./Terminal";
+import type { CompileResponse } from "../../../shared/api.ts";
+
 interface EditorProps {
+  fileName: string;
   code: string;
-  setCode: React.Dispatch<React.SetStateAction<string>>;
-  errors: any[];
-  consoleLogs: string[];
-  setConsoleLogs: React.Dispatch<React.SetStateAction<string[]>>;
-  environmentVariables: any[];
-  setEnvironmentVariables: React.Dispatch<React.SetStateAction<any[]>>;
-  executionTime: number | null;
-  setExecutionTime: React.Dispatch<React.SetStateAction<number | null>>;
-  animating: boolean;
-  setAnimating: React.Dispatch<React.SetStateAction<boolean>>;
-  autoCompile: boolean;
-  setAutoCompile: React.Dispatch<React.SetStateAction<boolean>>;
-  compilingServer: boolean;
-  setCompilingServer: React.Dispatch<React.SetStateAction<boolean>>;
-  undoStack: string[];
-  setUndoStack: React.Dispatch<React.SetStateAction<string[]>>;
-  redoStack: string[];
-  setRedoStack: React.Dispatch<React.SetStateAction<string[]>>;
-  saveTimerRef: React.MutableRefObject<NodeJS.Timeout | null>;
-  terminalHistory: Array<{ type: "cmd" | "out" | "err" | "sys"; text: string }>;
-  setTerminalHistory: React.Dispatch<React.SetStateAction<Array<{ type: "cmd" | "out" | "err" | "sys"; text: string }>>>;
-  addTerminalRow: (type: "cmd" | "out" | "err" | "sys", text: string) => void;
-  updateCodeWithHistory: (newVal: string, immediate: boolean) => void;
-  handleUndo: () => void;
-  handleRedo: () => void;
-  renderHighlightedKeywords: (codeText: string) => React.ReactNode;
-  executeProgram: (syncState?: boolean) => Promise<void>;
+  setCode: (v: string) => void;
+  lastRun: CompileResponse | null;
+  canUndo: boolean;
+  canRedo: boolean;
+  undo: () => void;
+  redo: () => void;
+  markedLines: Map<number, "error" | "warning">;
+  jumpTo: { line: number; col: number; seq: number } | null;
+  terminalRows: TerminalRow[];
+  setTerminalRows: React.Dispatch<React.SetStateAction<TerminalRow[]>>;
+  terminalInput: string;
+  setTerminalInput: (v: string) => void;
+  handleTerminalSubmit: (e: React.FormEvent) => void;
 }
 
-export default function Editor({
-  code,
-  setCode,
-  errors,
-  consoleLogs,
-  setConsoleLogs,
-  environmentVariables,
-  setEnvironmentVariables,
-  executionTime,
-  setExecutionTime,
-  animating,
-  setAnimating,
-  autoCompile,
-  setAutoCompile,
-  compilingServer,
-  setCompilingServer,
-  undoStack,
-  setUndoStack,
-  redoStack,
-  setRedoStack,
-  saveTimerRef,
-  terminalHistory,
-  setTerminalHistory,
-  addTerminalRow,
-  updateCodeWithHistory,
-  handleUndo,
-  handleRedo,
-  renderHighlightedKeywords,
-  executeProgram,
-}: EditorProps) {
-  const preRef = useRef<HTMLPreElement | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
+export default function Editor(props: EditorProps) {
   return (
     <>
       <EditorHeader
-        executionTime={executionTime}
-        handleUndo={handleUndo}
-        handleRedo={handleRedo}
-        undoStackLength={undoStack.length}
-        redoStackLength={redoStack.length}
+        fileName={props.fileName}
+        lastRun={props.lastRun}
+        canUndo={props.canUndo}
+        canRedo={props.canRedo}
+        undo={props.undo}
+        redo={props.redo}
       />
-      
       <CodeEditor
-        code={code}
-        updateCodeWithHistory={updateCodeWithHistory}
-        preRef={preRef}
-        textareaRef={textareaRef}
-        renderHighlightedKeywords={renderHighlightedKeywords}
-        handleUndo={handleUndo}
-        handleRedo={handleRedo}
+        code={props.code}
+        setCode={props.setCode}
+        undo={props.undo}
+        redo={props.redo}
+        markedLines={props.markedLines}
+        jumpTo={props.jumpTo}
       />
-      
       <Terminal
-        terminalHistory={terminalHistory}
-        setTerminalHistory={setTerminalHistory}
+        rows={props.terminalRows}
+        setRows={props.setTerminalRows}
+        input={props.terminalInput}
+        setInput={props.setTerminalInput}
+        onSubmit={props.handleTerminalSubmit}
       />
     </>
   );

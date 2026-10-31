@@ -20,7 +20,18 @@
         "./*"
       ]
     },
+    "types": [
+      "vite/client",
+      "node"
+    ],
     "allowImportingTsExtensions": true,
-    "noEmit": true
-  }
+    "noEmit": true,
+    "strict": true,
+    "erasableSyntaxOnly": true
+  },
+  "include": [
+    "src",
+    "server",
+    "shared"
+  ]
 }

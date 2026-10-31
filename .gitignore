@@ -1,9 +1,12 @@
 node_modules/
-./build/
-./dist/
-./coverage/
+build/
+dist/
+coverage/
 ./.qodo
 .DS_Store
 *.log
 .env*
 !.env.example
+
+# compiler staged for the worker image (scripts/stage-compiler.sh)
+vendor/

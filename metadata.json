@@ -1,6 +1,5 @@
 {
-  "name": "biton Web Compiler",
-  "description": "A web-based interactive compiler, visual output canvas, and smart AI debugger for the pre-alpha scripting language biton.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "name": "Biton Web Compiler",
+  "description": "A web editor for the Biton systems language. Code is compiled to native code by the real biton compiler on a server and run in a sandbox; diagnostics, output and every IR stage (tokens, AST, HIR, MIR, LLVM IR) are shown in the browser.",
+  "requestFramePermissions": []
 }
