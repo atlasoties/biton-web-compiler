@@ -15,6 +15,8 @@ import {
   movePath,
   normalizeInput,
   pathProblem,
+  reachableFrom,
+  checkTarget,
   resolveEntry,
   sanitizeProject,
   uniquePath,
@@ -136,4 +138,37 @@ test("sanitizeProject repairs names saved by older versions", () => {
   assert.equal(files["bad"], undefined);
   assert.equal(renamed.get("my file.bit"), "my_file.bit");
   assert.equal(sanitizeProject(null).files && Object.keys(sanitizeProject(null).files).length, 0);
+});
+
+// The game template's layout: main.bit imports crypt.rules, which imports
+// crypt.world; nested modules import from the entry's folder, not their own.
+const crypt = (): Files => ({
+  "main.bit": "import crypt.rules.{act}\nfn main() int { return 0 }",
+  "crypt/": "",
+  "crypt/rules.bit": "import crypt.world.{World}\nimport std.math.{abs}",
+  "crypt/world.bit": "pub type World { pub x: int }",
+  "crypt/unused.bit": "import crypt.world",
+  "notes/": "",
+  "notes/todo.bit": "fn main() int { return 1 }",
+});
+
+test("imports inside nested modules resolve from the entry's folder", () => {
+  const files = crypt();
+  assert.deepEqual(importsOf(files, "crypt/rules.bit", files["crypt/rules.bit"], ""), ["crypt/world.bit"]);
+  // From its own folder (as if compiled alone) the same import finds nothing.
+  assert.deepEqual(importsOf(files, "crypt/rules.bit", files["crypt/rules.bit"]), []);
+});
+
+test("reachableFrom follows imports through modules", () => {
+  assert.deepEqual([...reachableFrom(crypt(), "main.bit")].sort(), ["crypt/rules.bit", "crypt/world.bit", "main.bit"]);
+});
+
+test("a module the program uses is checked through the entry", () => {
+  const files = crypt();
+  assert.deepEqual(checkTarget(files, "main.bit", "crypt/world.bit"), { target: "main.bit", root: "" });
+  assert.deepEqual(checkTarget(files, "main.bit", "main.bit"), { target: "main.bit", root: "" });
+  // Not imported by the program, or no entry: checked on its own.
+  assert.deepEqual(checkTarget(files, "main.bit", "crypt/unused.bit"), { target: "crypt/unused.bit", root: "crypt" });
+  assert.deepEqual(checkTarget(files, "main.bit", "notes/todo.bit"), { target: "notes/todo.bit", root: "notes" });
+  assert.deepEqual(checkTarget(files, null, "crypt/world.bit"), { target: "crypt/world.bit", root: "crypt" });
 });

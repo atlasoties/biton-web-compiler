@@ -242,12 +242,15 @@ export function visibleRows(tree: TreeNode[], expanded: ReadonlySet<string>, dep
 }
 
 /**
- * Project files a Biton source imports, resolved as the compiler does: from
- * the importing file's folder, `import a.b` is "a/b.bit" (or the module "a.bit"
- * when `b` is an item). The standard library (`std.*`) is not in the project.
+ * Project files a Biton source imports, resolved as the compiler does. Every
+ * import in a program resolves from the folder of the file being compiled
+ * (`root`, the entry's folder), including imports inside nested modules:
+ * `import a.b` is "<root>/a/b.bit", or the module "<root>/a.bit" when `b` is
+ * an item. When the file is compiled on its own, the root is its own folder.
+ * The standard library (`std.*`) is not in the project.
  */
-export function importsOf(files: Files, path: string, source: string): string[] {
-  const dir = dirname(path);
+export function importsOf(files: Files, path: string, source: string, root = dirname(path)): string[] {
+  const dir = root;
   const found = new Set<string>();
   const re = /^\s*import\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)/gm;
   for (let m; (m = re.exec(source)); ) {
@@ -262,6 +265,37 @@ export function importsOf(files: Files, path: string, source: string): string[] 
     }
   }
   return [...found];
+}
+
+/** `entry` and every project file it imports, directly or through other modules. */
+export function reachableFrom(files: Files, entry: string): Set<string> {
+  const root = dirname(entry);
+  const seen = new Set<string>([entry]);
+  const queue = [entry];
+  while (queue.length) {
+    const path = queue.pop()!;
+    for (const dep of importsOf(files, path, files[path] ?? "", root)) {
+      if (!seen.has(dep)) {
+        seen.add(dep);
+        queue.push(dep);
+      }
+    }
+  }
+  return seen;
+}
+
+/**
+ * What to compile to check `active`, and the folder its imports resolve from.
+ * A file the program uses is checked through the entry, exactly as Run
+ * compiles it (its imports resolve from the entry's folder, and the
+ * diagnostics name the file). A file the program does not use is checked on
+ * its own.
+ */
+export function checkTarget(files: Files, entry: string | null, active: string): { target: string; root: string } {
+  if (entry && entry !== active && isFile(files, entry) && reachableFrom(files, entry).has(active)) {
+    return { target: entry, root: dirname(entry) };
+  }
+  return { target: active, root: dirname(active) };
 }
 
 /** The file to run: the chosen entry if it still exists, else main.bit, else the first .bit file at the top level. */

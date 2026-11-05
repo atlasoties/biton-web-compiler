@@ -29,7 +29,7 @@ import {
 } from "./lib/api";
 import { formatArgs, parseArgs } from "./lib/args";
 import { readPicked, type Picked } from "./lib/importFiles";
-import { basename, dirname, freshPath, importsOf, isFile, joinPath, kindOf, listFiles, pathProblem, uniquePath, type Files } from "./lib/project";
+import { basename, checkTarget, dirname, freshPath, importsOf, isFile, joinPath, kindOf, listFiles, pathProblem, uniquePath, type Files } from "./lib/project";
 import { MAX_SHARE_URL, encodeShare } from "./lib/share";
 import { load as loadPrefs, save as savePrefs, type Saved } from "./lib/storage";
 import { ProjectStore, isProjectKey, type ProjectDoc } from "./lib/projects";
@@ -333,15 +333,18 @@ export default function Workspace({ projectId, projectName, doc, store, auth: au
     if (!diagnosticsStale || !isSource(active)) return;
     const target = active;
     const snapshot = files;
+    // A module of the program is checked through the entry, as Run compiles
+    // it: its imports resolve from the entry's folder.
+    const compiled = checkTarget(snapshot, entry, target).target;
     const timer = setTimeout(async () => {
       checkAbort.current?.abort();
       const ac = new AbortController();
       checkAbort.current = ac;
       setChecking(true);
       try {
-        const res = await compile({ ...projectRequest(snapshot, target), mode: "check" }, ac.signal);
+        const res = await compile({ ...projectRequest(snapshot, compiled), mode: "check" }, ac.signal);
         if (latest.current.files !== snapshot || latest.current.active !== target) return; // a newer check is coming
-        setDiag({ list: located(res.diagnostics, target), files: snapshot, target });
+        setDiag({ list: located(res.diagnostics, compiled), files: snapshot, target });
         setServerError(null);
       } catch (e) {
         if (e instanceof RateLimitError) {
@@ -356,7 +359,7 @@ export default function Workspace({ projectId, projectName, doc, store, auth: au
     }, LIVE_CHECK_DELAY_MS);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files, active, recheck]);
+  }, [files, active, entry, recheck]);
 
   const showDiagnostics = useCallback(
     (ds: Diagnostic[], compilerOutput: string) => {
@@ -517,7 +520,8 @@ export default function Workspace({ projectId, projectName, doc, store, auth: au
       const source = snapshot[target];
       setEmit((s) => ({ ...s, kind, loading: true }));
       try {
-        const res = await compileWithRetry({ ...projectRequest(snapshot, target), mode: "emit", emit: kind, opt }, ac.signal);
+        const compiled = checkTarget(snapshot, entry, target).target;
+        const res = await compileWithRetry({ ...projectRequest(snapshot, compiled), mode: "emit", emit: kind, opt }, ac.signal);
         const failed = !res.success;
         const text = failed
           ? [...res.diagnostics.map((d) => d.rendered), res.compilerOutput].filter(Boolean).join("\n\n") || "compilation failed"
@@ -530,7 +534,7 @@ export default function Workspace({ projectId, projectName, doc, store, auth: au
         if (emitAbort.current === ac) emitAbort.current = null;
       }
     },
-    [opt, latest],
+    [opt, latest, entry],
   );
 
   // ── file actions ───────────────────────────────────────────────────────
@@ -631,10 +635,11 @@ export default function Workspace({ projectId, projectName, doc, store, auth: au
   const aiRelated = useCallback(() => {
     const s = latest.current;
     if (!s.active) return undefined;
-    return importsOf(s.files, s.active, s.files[s.active] ?? "")
+    const { root } = checkTarget(s.files, entry, s.active);
+    return importsOf(s.files, s.active, s.files[s.active] ?? "", root)
       .slice(0, AI_MAX_RELATED_FILES)
       .map((path) => ({ path, content: s.files[path].slice(0, AI_MAX_RELATED_CHARS) }));
-  }, [latest]);
+  }, [latest, entry]);
 
   const saveNow = useCallback(() => {
     if (persist()) notify("Saved in this browser");
@@ -691,9 +696,10 @@ export default function Workspace({ projectId, projectName, doc, store, auth: au
           addRow("err", "Open a .bit file to check it.");
           return;
         }
-        compile({ ...projectRequest(latest.current.files, target), mode: "check" })
+        const compiled = checkTarget(latest.current.files, entry, target).target;
+        compile({ ...projectRequest(latest.current.files, compiled), mode: "check" })
           .then((res) => {
-            showDiagnostics(located(res.diagnostics, target), res.compilerOutput);
+            showDiagnostics(located(res.diagnostics, compiled), res.compilerOutput);
             addRow("sys", res.success ? `No errors in ${target} (${Math.round(res.compileTimeMs)} ms).` : "Type check failed.");
           })
           .catch((err) => addRow("err", `Request failed: ${err.message}`));
