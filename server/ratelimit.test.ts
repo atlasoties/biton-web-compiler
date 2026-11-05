@@ -8,6 +8,7 @@ const cfg = (over: Partial<RateLimitConfig> = {}): RateLimitConfig => ({
   enabled: true,
   run: { perMinute: 6, burst: 3 },
   light: { perMinute: 60, burst: 5 },
+  ai: { perMinute: 30, burst: 4 },
   maxInFlight: 10,
   trustProxy: 0,
   maxClients: 1000,
@@ -42,6 +43,8 @@ test("buckets and clients are independent", () => {
   }
   assert.equal(rl.acquire("a", "run").allowed, false);
   assert.equal(rl.acquire("a", "light").allowed, true); // other bucket
+  rl.release("a");
+  assert.equal(rl.acquire("a", "ai").allowed, true); // third bucket
   rl.release("a");
   assert.equal(rl.acquire("b", "run").allowed, true); // other client
 });

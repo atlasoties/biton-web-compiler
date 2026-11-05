@@ -1,8 +1,9 @@
 // Per-client rate limiting for the public API.
 //
 // * Token buckets: one budget for program runs (each starts a compiler and
-//   a native process) and a larger one for checks and --emit (the live
-//   type-check fires while the user types). Cache hits are free.
+//   a native process), a larger one for checks and --emit (the live
+//   type-check fires while the user types), and a separate one for AI
+//   completions. Cache hits are free.
 // * A cap on concurrent jobs per client, so one client cannot occupy every
 //   worker slot.
 // * Clients are identified by IP address (IPv6 by /64, since one host
@@ -15,13 +16,16 @@
 import type { IncomingMessage } from "node:http";
 import net from "node:net";
 
-export type Bucket = "run" | "light";
+export type Bucket = "run" | "light" | "ai";
+
+const BUCKETS: readonly Bucket[] = ["run", "light", "ai"];
 
 export interface RateLimitConfig {
   enabled: boolean;
   /** Tokens added per minute and bucket capacity, per bucket. */
   run: { perMinute: number; burst: number };
   light: { perMinute: number; burst: number };
+  ai: { perMinute: number; burst: number };
   maxInFlight: number;
   /** Number of reverse proxies in front of the API whose X-Forwarded-For is trusted. */
   trustProxy: number;
@@ -64,14 +68,18 @@ export class RateLimiter {
     const t = this.now();
     let s = this.clients.get(key);
     if (!s) {
-      s = { tokens: { run: this.cfg.run.burst, light: this.cfg.light.burst }, updated: t, inFlight: 0 };
+      s = {
+        tokens: { run: this.cfg.run.burst, light: this.cfg.light.burst, ai: this.cfg.ai.burst },
+        updated: t,
+        inFlight: 0,
+      };
       if (this.clients.size >= this.cfg.maxClients) this.evict();
       this.clients.set(key, s);
       return s;
     }
-    // Refill both buckets for the time that passed.
+    // Refill every bucket for the time that passed.
     const elapsedMin = (t - s.updated) / 60000;
-    for (const b of ["run", "light"] as const) {
+    for (const b of BUCKETS) {
       s.tokens[b] = Math.min(this.cfg[b].burst, s.tokens[b] + elapsedMin * this.cfg[b].perMinute);
     }
     s.updated = t;
@@ -133,7 +141,7 @@ export class RateLimiter {
   sweep() {
     for (const [k] of this.clients) {
       const s = this.state(k);
-      if (s.inFlight === 0 && s.tokens.run >= this.cfg.run.burst && s.tokens.light >= this.cfg.light.burst) {
+      if (s.inFlight === 0 && BUCKETS.every((b) => s.tokens[b] >= this.cfg[b].burst)) {
         this.clients.delete(k);
       }
     }

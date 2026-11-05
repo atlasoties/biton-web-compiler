@@ -13,6 +13,7 @@ export const OPT_LEVELS = ["O0", "O1", "O2", "O3"] as const;
 export type OptLevel = (typeof OPT_LEVELS)[number];
 
 export interface CompileRequest {
+  /** Source of `entry`, the file the request compiles, checks, formats or emits. */
   code: string;
   mode: CompileMode;
   /** Required when mode is "emit". */
@@ -23,8 +24,40 @@ export interface CompileRequest {
   stdin?: string;
   /** Arguments passed to the program, after its name ("run" only; see std.env). */
   args?: string[];
-  /** Additional files to compile (multi-file support). */
+  /** Project path of `code` (default "main.bit"). Imports resolve from its folder. */
+  entry?: string;
+  /** The project's other files, by path (e.g. "src/geometry.bit"), written next to `entry`. */
   files?: Record<string, string>;
+}
+
+/** Default entry path; also the name single-file programs compile under. */
+export const DEFAULT_ENTRY = "main.bit";
+/** Limits on a project sent with a request (also enforced by the server). */
+export const MAX_PROJECT_FILES = 200;
+export const MAX_PATH_LENGTH = 200;
+export const MAX_PATH_DEPTH = 8;
+/** Names the server uses inside a job directory. */
+const RESERVED_PATHS = new Set(["prog"]);
+
+/**
+ * Why a project path is unacceptable, or null if it is fine. Paths are
+ * relative and slash-separated ("src/util/geo.bit"); each part uses letters,
+ * digits, "_", "-" and "." and cannot start with "." (so no "..", no hidden
+ * files). The server applies the same rule to everything it writes.
+ */
+export function projectPathProblem(path: string): string | null {
+  if (!path) return "Enter a name.";
+  if (path.length > MAX_PATH_LENGTH) return `Use a path shorter than ${MAX_PATH_LENGTH} characters.`;
+  if (path.startsWith("/")) return "Use a relative path, like src/main.bit.";
+  const parts = path.split("/");
+  if (parts.length > MAX_PATH_DEPTH) return `Folders can be at most ${MAX_PATH_DEPTH - 1} levels deep.`;
+  for (const part of parts) {
+    if (!part) return "A path cannot contain an empty folder name.";
+    if (part.startsWith(".")) return "Names cannot start with a dot.";
+    if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(part)) return "Use letters, digits, “_”, “-” and “.” in names.";
+  }
+  if (RESERVED_PATHS.has(path)) return `“${path}” is reserved.`;
+  return null;
 }
 
 /** Limits on `args` (also enforced by the server). */
@@ -84,6 +117,31 @@ export interface RunResult {
   runTimeMs: number;
 }
 
+/** How much of the current file the editor sends around the cursor for AI completion. */
+export const AI_CONTEXT_BEFORE = 4000;
+export const AI_CONTEXT_AFTER = 2000;
+
+/** POST /api/complete: ask the configured provider for one completion at the cursor. */
+export interface CompleteRequest {
+  /** Source immediately before the cursor. */
+  before: string;
+  /** Source immediately after the cursor. */
+  after: string;
+  /** Active file name, so the model knows what it is editing. */
+  file: string;
+  /** Other project files that help (e.g. modules this file imports), already trimmed by the editor. */
+  related?: Array<{ path: string; content: string }>;
+}
+
+/** Limits on the related-file context the editor sends with an AI request. */
+export const AI_MAX_RELATED_FILES = 4;
+export const AI_MAX_RELATED_CHARS = 3000;
+
+export interface CompleteResponse {
+  /** Text to insert at the cursor. Empty when the model has no suggestion. */
+  completion: string;
+}
+
 export interface HealthResponse {
   ok: boolean;
   compilerVersion: string;
@@ -95,6 +153,14 @@ export interface HealthResponse {
     maxOutputBytes: number;
     maxSourceBytes: number;
     maxStdinBytes: number;
+    /** Total size of a project (the entry and its other files). */
+    maxProjectBytes?: number;
+  };
+  /** AI availability, reported by the API's health response. */
+  ai?: {
+    enabled: boolean;
+    /** The API requires a signed-in user before calling the provider. */
+    requireSignIn: boolean;
   };
 }
 

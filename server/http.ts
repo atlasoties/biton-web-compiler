@@ -2,7 +2,16 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { COMPILE_MODES, EMIT_KINDS, MAX_ARG_BYTES, MAX_ARGS, OPT_LEVELS, type CompileRequest } from "../shared/api.ts";
+import {
+  COMPILE_MODES,
+  EMIT_KINDS,
+  MAX_ARG_BYTES,
+  MAX_ARGS,
+  MAX_PROJECT_FILES,
+  OPT_LEVELS,
+  projectPathProblem,
+  type CompileRequest,
+} from "../shared/api.ts";
 import { BadRequest } from "./compiler.ts";
 
 export function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -68,9 +77,45 @@ export function validateRequest(body: unknown): CompileRequest {
       if (Buffer.byteLength(a, "utf8") > MAX_ARG_BYTES) throw new BadRequest(`an argument is longer than ${MAX_ARG_BYTES} bytes`);
     }
   }
+  let entry: string | undefined;
+  if (b.entry !== undefined) {
+    if (typeof b.entry !== "string") throw new BadRequest("`entry` must be a string");
+    const problem = projectPathProblem(b.entry);
+    if (problem) throw new BadRequest(`\`entry\` ${JSON.stringify(b.entry)}: ${problem}`);
+    entry = b.entry;
+  }
+  let files: Record<string, string> | undefined;
+  if (b.files !== undefined) {
+    if (!b.files || typeof b.files !== "object" || Array.isArray(b.files)) throw new BadRequest("`files` must be an object of path → text");
+    const entries = Object.entries(b.files as Record<string, unknown>);
+    if (entries.length > MAX_PROJECT_FILES) throw new BadRequest(`at most ${MAX_PROJECT_FILES} files`);
+    files = {};
+    const seen = new Set<string>();
+    for (const [name, content] of entries) {
+      const problem = projectPathProblem(name);
+      if (problem) throw new BadRequest(`file ${JSON.stringify(name.slice(0, 80))}: ${problem}`);
+      if (typeof content !== "string") throw new BadRequest(`file ${JSON.stringify(name)} must be text`);
+      seen.add(name);
+      files[name] = content;
+    }
+    // "a" and "a/b.bit" cannot both exist: one would have to be a file and a folder.
+    for (const name of seen) {
+      for (let i = name.indexOf("/"); i !== -1; i = name.indexOf("/", i + 1)) {
+        if (seen.has(name.slice(0, i)) || name.slice(0, i) === entry) {
+          throw new BadRequest(`${JSON.stringify(name.slice(0, i))} is both a file and a folder`);
+        }
+      }
+    }
+    if (entry && [...seen].some((n) => entry!.startsWith(n + "/"))) {
+      throw new BadRequest("`entry` is inside a path that is also a file");
+    }
+    if (entries.length === 0) files = undefined;
+  }
   return {
     code: b.code,
     mode,
+    entry,
+    files,
     emit: mode === "emit" ? (b.emit as CompileRequest["emit"]) : undefined,
     opt: b.opt as CompileRequest["opt"],
     stdin: mode === "run" ? (b.stdin as string | undefined) : undefined,

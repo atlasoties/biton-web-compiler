@@ -9,7 +9,7 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 
-import { MAX_ARG_BYTES, MAX_ARGS, type HealthResponse } from "../shared/api.ts";
+import { MAX_ARG_BYTES, MAX_ARGS, MAX_PROJECT_FILES, type HealthResponse } from "../shared/api.ts";
 import { config } from "./config.ts";
 import { BadRequest, compilerVersion, publicLimits, runJob } from "./compiler.ts";
 import { clientGone, gracefulShutdown, log, readJson, send, validateRequest } from "./http.ts";
@@ -57,7 +57,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       const signal = clientGone(res);
-      const job = validateRequest(await readJson(req, config.maxSourceBytes + config.maxStdinBytes + MAX_ARGS * (MAX_ARG_BYTES + 8) + 4096));
+      const job = validateRequest(await readJson(req, config.maxProjectBytes + config.maxStdinBytes + MAX_ARGS * (MAX_ARG_BYTES + 8) + MAX_PROJECT_FILES * 512 + 4096));
       const started = performance.now();
       const result = await runJob(job, signal);
       log({

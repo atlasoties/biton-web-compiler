@@ -30,3 +30,23 @@ test("stdin and args only reach runs", () => {
   assert.equal(r.args, undefined);
   assert.equal(validateRequest({ code: "", mode: "emit", emit: "ir", opt: "O1" }).opt, "O1");
 });
+
+test("passes a project's entry and files through", () => {
+  const r = validateRequest({ code: "import util.geo", mode: "check", entry: "src/app.bit", files: { "src/util/geo.bit": "fn f() int { return 1 }", "data.txt": "x" } });
+  assert.equal(r.entry, "src/app.bit");
+  assert.deepEqual(Object.keys(r.files!), ["src/util/geo.bit", "data.txt"]);
+  assert.equal(validateRequest({ code: "", files: {} }).files, undefined);
+});
+
+test("rejects unsafe or conflicting project paths", () => {
+  for (const name of ["../x.bit", "/etc/passwd", "a/../../b", ".hidden", "a//b.bit", "a\\b.bit", "a b.bit", "prog", "x".repeat(201), "a/b/c/d/e/f/g/h/i.bit"]) {
+    assert.throws(() => validateRequest({ code: "", files: { [name]: "" } }), BadRequest, name.slice(0, 40));
+    assert.throws(() => validateRequest({ code: "", entry: name }), BadRequest, name.slice(0, 40));
+  }
+  for (const files of [[], "x", { "a.bit": 1 }, { a: "", "a/b.bit": "" }, Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`f${i}.bit`, ""]))]) {
+    assert.throws(() => validateRequest({ code: "", files }), BadRequest, JSON.stringify(files).slice(0, 40));
+  }
+  // The entry itself cannot also be a folder of another file.
+  assert.throws(() => validateRequest({ code: "", entry: "lib", files: { "lib/x.bit": "" } }), BadRequest);
+  assert.throws(() => validateRequest({ code: "", entry: "lib/x.bit", files: { lib: "" } }), BadRequest);
+});

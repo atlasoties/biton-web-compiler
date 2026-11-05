@@ -58,6 +58,8 @@ export const config = {
   maxOutputBytes: int("MAX_OUTPUT_BYTES", 256 * 1024),
   maxSourceBytes: int("MAX_SOURCE_BYTES", 128 * 1024),
   maxStdinBytes: int("MAX_STDIN_BYTES", 64 * 1024),
+  /** Total size of a multi-file project (the entry plus every other file). */
+  maxProjectBytes: int("MAX_PROJECT_BYTES", 512 * 1024),
   maxConcurrent: Math.max(1, int("MAX_CONCURRENT", 2)),
   maxQueue: int("MAX_QUEUE", 32),
 
@@ -70,11 +72,30 @@ export const config = {
   workerToken: process.env.WORKER_TOKEN || "",
   cacheBytes: int("CACHE_MB", 64) * 1024 * 1024,
 
+  // ── AI completion (server-side provider proxy) ──
+  ai: {
+    enabled: process.env.AI_ENABLED === "1",
+    /** Any OpenAI-compatible endpoint; the default is Gemini's compatibility API. */
+    baseUrl: (process.env.AI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/+$/, ""),
+    apiKey: process.env.AI_API_KEY || "",
+    model: process.env.AI_MODEL || "gemini-2.5-flash",
+    maxTokens: Math.max(32, int("AI_MAX_TOKENS", 256)),
+    /** Only this much text around the cursor is sent to the provider. */
+    maxBefore: Math.max(500, int("AI_MAX_BEFORE", 4000)),
+    maxAfter: Math.max(0, int("AI_MAX_AFTER", 2000)),
+    timeoutMs: Math.max(1000, int("AI_TIMEOUT_MS", 10_000)),
+    /** Default: required in production when running programs also requires sign-in. */
+    requireSignIn: process.env.AI_REQUIRE_SIGNIN
+      ? process.env.AI_REQUIRE_SIGNIN !== "0"
+      : production && process.env.REQUIRE_SIGNIN_TO_RUN !== "0",
+  },
+
   // ── rate limiting (per client IP, API server) ──
   rateLimit: {
     enabled: process.env.RATE_LIMIT !== "off",
     run: { perMinute: Math.max(1, int("RATE_RUN_PER_MIN", 20)), burst: Math.max(1, int("RATE_RUN_BURST", 10)) },
     light: { perMinute: Math.max(1, int("RATE_CHECK_PER_MIN", 120)), burst: Math.max(1, int("RATE_CHECK_BURST", 40)) },
+    ai: { perMinute: Math.max(1, int("RATE_AI_PER_MIN", 30)), burst: Math.max(1, int("RATE_AI_BURST", 10)) },
     maxInFlight: Math.max(1, int("RATE_MAX_INFLIGHT", 3)),
     trustProxy: int("TRUST_PROXY", 0),
     maxClients: Math.max(100, int("RATE_MAX_CLIENTS", 100_000)),

@@ -34,7 +34,20 @@ services:
       RATE_RUN_BURST: ${RATE_RUN_BURST:-10}
       RATE_CHECK_PER_MIN: ${RATE_CHECK_PER_MIN:-120}
       RATE_CHECK_BURST: ${RATE_CHECK_BURST:-40}
+      RATE_AI_PER_MIN: ${RATE_AI_PER_MIN:-30}
+      RATE_AI_BURST: ${RATE_AI_BURST:-10}
       RATE_MAX_INFLIGHT: ${RATE_MAX_INFLIGHT:-3}
+      # Optional AI completion (any OpenAI-compatible endpoint; empty uses the
+      # code defaults). The key stays in this container, never in the browser.
+      AI_ENABLED: ${AI_ENABLED:-0}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-256}
+      AI_MAX_BEFORE: ${AI_MAX_BEFORE:-4000}
+      AI_MAX_AFTER: ${AI_MAX_AFTER:-2000}
+      AI_TIMEOUT_MS: ${AI_TIMEOUT_MS:-10000}
+      AI_REQUIRE_SIGNIN: ${AI_REQUIRE_SIGNIN:-}
       # Sign-in (the web container reaches Google and the SMTP server).
       AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env}

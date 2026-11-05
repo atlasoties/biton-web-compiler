@@ -39,3 +39,12 @@ test("refuses entries larger than a quarter of the cache", () => {
   c.set("big", res(3000));
   assert.equal(c.get("big"), undefined);
 });
+
+test("key depends on the entry and every other project file, not their order", () => {
+  const base = { code: "import geo", mode: "check" as const };
+  const k = (r: object) => ResultCache.key("1", { ...base, ...r });
+  assert.notEqual(k({}), k({ files: { "geo.bit": "a" } }));
+  assert.notEqual(k({ files: { "geo.bit": "a" } }), k({ files: { "geo.bit": "b" } }));
+  assert.notEqual(k({ entry: "main.bit" }), k({ entry: "src/main.bit" }));
+  assert.equal(k({ files: { "a.bit": "1", "b.bit": "2" } }), k({ files: { "b.bit": "2", "a.bit": "1" } }));
+});
