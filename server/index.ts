@@ -1,7 +1,8 @@
 // Public HTTP API for the Biton web compiler.
 //
-//   GET  /api/health   compiler version, sandbox mode and limits
+//   GET  /api/health   compiler version, sandbox mode, limits and AI availability
 //   POST /api/compile  { code, mode: "run" | "check" | "emit" | "format", emit?, opt?, stdin?, args? }
+//   POST /api/complete { before, after, file }   optional AI completion
 //   /api/auth/*        sign-in (server/auth.ts); runs need a signed-in user
 //                      unless REQUIRE_SIGNIN_TO_RUN=0
 //   GET  /healthz      liveness
@@ -23,22 +24,25 @@ import { randomBytes } from "node:crypto";
 
 import {
   MAX_ARG_BYTES,
+  MAX_PROJECT_FILES,
   MAX_ARGS,
   SIGNIN_REQUIRED,
   type CompileRequest,
   type CompileResponse,
+  type CompleteResponse,
   type HealthResponse,
 } from "../shared/api.ts";
+import { AIProviderError, complete, validateCompleteRequest } from "./ai.ts";
 import { AuthError, createAuth, mailerFromEnv, type Auth } from "./auth.ts";
 import { ResultCache } from "./cache.ts";
 import { config } from "./config.ts";
-import { BadRequest } from "./compiler.ts";
+import { BadRequest, validateSize } from "./compiler.ts";
 import { clientGone, gracefulShutdown, log, readJson, send, validateRequest } from "./http.ts";
 import { BusyError, CancelledError } from "./sandbox.ts";
 import { RateLimiter, addressKey, clientAddress, rateLimitHeaders } from "./ratelimit.ts";
 
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
-const MAX_BODY_BYTES = config.maxSourceBytes + config.maxStdinBytes + MAX_ARGS * (MAX_ARG_BYTES + 8) + 4096;
+const MAX_BODY_BYTES = config.maxProjectBytes + config.maxStdinBytes + MAX_ARGS * (MAX_ARG_BYTES + 8) + MAX_PROJECT_FILES * 512 + 4096;
 
 class UpstreamError extends Error {
   readonly status: number;
@@ -139,13 +143,25 @@ const cache = new ResultCache(config.cacheBytes);
 const limiter = new RateLimiter(config.rateLimit);
 setInterval(() => limiter.sweep(), 60_000).unref();
 if (config.rateLimit.enabled) {
-  const { run, light, maxInFlight, trustProxy } = config.rateLimit;
+  const { run, light, ai, maxInFlight, trustProxy } = config.rateLimit;
   console.log(
     `  rate limit: runs ${run.perMinute}/min (burst ${run.burst}), checks ${light.perMinute}/min (burst ${light.burst}), ` +
+      `AI ${ai.perMinute}/min (burst ${ai.burst}), ` +
       `${maxInFlight} concurrent per client, trusting ${trustProxy} proxy hop(s)`,
   );
 } else {
   console.warn("  rate limit: OFF");
+}
+if (config.ai.enabled) {
+  console.log(
+    `  ai: ${config.ai.model} via ${config.ai.baseUrl} ` +
+      `(${config.ai.requireSignIn ? "signed-in users" : "rate-limited"})`,
+  );
+  if (!config.ai.apiKey && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::|\/|$)/.test(config.ai.baseUrl)) {
+    console.warn("  ai: AI_API_KEY is not set; provider requests will fail");
+  }
+} else {
+  console.log("  ai: off");
 }
 
 // ── sign-in ─────────────────────────────────────────────────────────────
@@ -255,9 +271,7 @@ let warnedXff = false;
 async function handleCompile(req: import("node:http").IncomingMessage, res: ServerResponse) {
   const signal = clientGone(res);
   const job = validateRequest(await readJson(req, MAX_BODY_BYTES));
-  if (Buffer.byteLength(job.code, "utf8") > config.maxSourceBytes) {
-    throw new BadRequest(`source is larger than ${config.maxSourceBytes} bytes`);
-  }
+  validateSize(job);
   const user = auth.user(req);
   // A request that carries a session must come from the app's own pages.
   if (user) auth.checkOrigin(req);
@@ -323,6 +337,57 @@ async function handleCompile(req: import("node:http").IncomingMessage, res: Serv
   }
 }
 
+const MAX_COMPLETE_BODY_BYTES = 64 * 1024;
+
+async function handleComplete(req: import("node:http").IncomingMessage, res: ServerResponse) {
+  if (!config.ai.enabled) {
+    send(res, 404, { error: "AI completion is disabled" });
+    return;
+  }
+
+  const signal = clientGone(res);
+  const body = validateCompleteRequest(await readJson(req, MAX_COMPLETE_BODY_BYTES));
+  const user = auth.user(req);
+  // A request that carries a session must come from the app's own pages.
+  if (user) auth.checkOrigin(req);
+  if (config.ai.requireSignIn && !user) {
+    send(res, 401, { error: "sign in to use AI completion", code: SIGNIN_REQUIRED });
+    return;
+  }
+
+  const client = user ? `user:${user.id}` : addressKey(clientAddress(req, config.rateLimit.trustProxy));
+  const decision = limiter.acquire(client, "ai");
+  const headers = rateLimitHeaders(decision);
+  if (!decision.allowed) {
+    log({ event: "rate_limited", client, mode: "ai", reason: decision.reason });
+    send(
+      res,
+      429,
+      {
+        error:
+          decision.reason === "concurrency"
+            ? "too many requests at once; wait for the previous one to finish"
+            : `AI completion rate limit reached; try again in ${decision.retryAfter} s`,
+        retryAfter: decision.retryAfter,
+      },
+      headers,
+    );
+    return;
+  }
+
+  const started = performance.now();
+  try {
+    const completion = await complete(body, signal);
+    log({ event: "complete", ok: true, user: user?.id, ms: Math.round(performance.now() - started), chars: completion.length });
+    send(res, 200, { completion } satisfies CompleteResponse, headers);
+  } catch (e) {
+    if (signal.aborted) return; // the client is gone; nothing to send
+    throw e;
+  } finally {
+    limiter.release(client);
+  }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", "http://localhost");
 
@@ -356,7 +421,13 @@ const server = createServer(async (req, res) => {
           return;
         }
         const { ok, compilerVersion, sandbox, limits } = h;
-        send(res, 200, { ok, compilerVersion, sandbox, limits } satisfies HealthResponse);
+        send(res, 200, {
+          ok,
+          compilerVersion,
+          sandbox,
+          limits,
+          ai: { enabled: config.ai.enabled, requireSignIn: config.ai.requireSignIn },
+        } satisfies HealthResponse);
         return;
       }
       case "/api/compile":
@@ -365,6 +436,13 @@ const server = createServer(async (req, res) => {
           return;
         }
         await handleCompile(req, res);
+        return;
+      case "/api/complete":
+        if (req.method !== "POST") {
+          send(res, 405, { error: "use POST" });
+          return;
+        }
+        await handleComplete(req, res);
         return;
     }
 
@@ -377,7 +455,17 @@ const server = createServer(async (req, res) => {
   } catch (e) {
     if (e instanceof BadRequest) send(res, 400, { error: e.message });
     else if (e instanceof AuthError) send(res, e.status, { error: e.message });
-    else if (e instanceof BusyError) send(res, 503, { error: e.message }, { "Retry-After": "2" });
+    else if (e instanceof AIProviderError) {
+      console.error(`ai: ${e.message}`);
+      send(res, e.status, {
+        error:
+          e.status === 429
+            ? "AI provider rate limit reached; try again shortly"
+            : e.status === 504
+              ? "AI completion timed out"
+              : "AI completion failed",
+      });
+    } else if (e instanceof BusyError) send(res, 503, { error: e.message }, { "Retry-After": "2" });
     else if (e instanceof UpstreamError) {
       console.error(e.message);
       send(res, e.status, { error: "compile worker is unavailable" });

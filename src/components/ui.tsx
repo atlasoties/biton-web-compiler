@@ -1,6 +1,8 @@
 // Small building blocks shared by the whole UI, drawn from the theme tokens.
 
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { forwardRef, useId, type ButtonHTMLAttributes, type ReactNode } from "react";
+
+import wordmarkUrl from "../assets/biton-wordmark.png";
 
 export const cx = (...c: Array<string | false | null | undefined>) => c.filter(Boolean).join(" ");
 
@@ -146,11 +148,33 @@ export function SectionTitle({ children, right }: { children: ReactNode; right?:
   );
 }
 
-export function Logo({ className }: { className?: string }) {
+/**
+ * The Biton mark: the gold signal in the navy hexagon (drawn from the brand
+ * artwork in public/biton-logo.png). At small sizes the strokes are drawn a
+ * little bolder so they survive being 24px wide.
+ */
+export function Logo({ className, detailed = false }: { className?: string; detailed?: boolean }) {
+  const id = useId().replace(/:/g, "");
+  const width = detailed ? 13 : 24;
   return (
-    <svg viewBox="0 0 32 32" className={className} aria-hidden="true">
-      <rect width="32" height="32" rx="8" fill="var(--accent)" />
-      <path d="M10 9h6.5a3.75 3.75 0 0 1 0 7.5H10zm0 7.5h7.5a3.75 3.75 0 0 1 0 7.5H10z" fill="none" stroke="var(--accent-text)" strokeWidth="2.6" strokeLinejoin="round" />
+    <svg viewBox="690 97 540 540" className={className} role="img" aria-label="Biton">
+      <defs>
+        <linearGradient id={`g${id}`} gradientUnits="userSpaceOnUse" x1="1100" y1="230" x2="818" y2="520">
+          <stop offset="0" stopColor="#ffb733" />
+          <stop offset="1" stopColor="#ffdb98" />
+        </linearGradient>
+      </defs>
+      <path d="M960 102 L1178 235 V500 L960 632 L743 500 V235 Z" fill="#051139" stroke="var(--logo-edge)" strokeWidth="14" strokeLinejoin="round" />
+      <g fill="none" stroke={`url(#g${id})`} strokeWidth={width} strokeLinecap="round" strokeLinejoin="miter" strokeMiterlimit="8">
+        <path d="M959 231 V353" />
+        <path d="M910 366 L959 452 L1007 366" />
+        <path d="M818 385 H886 L959 512 L1031 385 H1099" />
+      </g>
     </svg>
   );
+}
+
+/** The "biton" wordmark from the brand artwork. */
+export function Wordmark({ className }: { className?: string }) {
+  return <img src={wordmarkUrl} alt="biton" className={className} draggable={false} />;
 }

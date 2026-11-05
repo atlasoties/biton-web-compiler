@@ -5,14 +5,14 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { CompileRequest, CompileResponse, HealthResponse, RunResult } from "../shared/api.ts";
+import { DEFAULT_ENTRY, type CompileRequest, type CompileResponse, type HealthResponse, type RunResult } from "../shared/api.ts";
 import { config } from "./config.ts";
 import { parseDiagnostics } from "./diagnostics.ts";
 import { exec } from "./exec.ts";
 import { CancelledError, createJob, destroyJob, limited, slots, type Job } from "./sandbox.ts";
 
-const SOURCE_NAME = "main.bit";
 const PROGRAM_NAME = "prog";
+const entryOf = (req: CompileRequest) => req.entry ?? DEFAULT_ENTRY;
 
 export class BadRequest extends Error {}
 
@@ -32,6 +32,7 @@ export function publicLimits(): HealthResponse["limits"] {
     maxOutputBytes: config.maxOutputBytes,
     maxSourceBytes: config.maxSourceBytes,
     maxStdinBytes: config.maxStdinBytes,
+    maxProjectBytes: config.maxProjectBytes,
   };
 }
 
@@ -56,6 +57,11 @@ export function validateSize(req: CompileRequest) {
   if (req.stdin && Buffer.byteLength(req.stdin, "utf8") > config.maxStdinBytes) {
     throw new BadRequest(`stdin is larger than ${config.maxStdinBytes} bytes`);
   }
+  let total = Buffer.byteLength(req.code, "utf8");
+  for (const content of Object.values(req.files ?? {})) total += Buffer.byteLength(content, "utf8");
+  if (total > config.maxProjectBytes) {
+    throw new BadRequest(`the project is larger than ${config.maxProjectBytes} bytes`);
+  }
 }
 
 /** Run one request in a free slot. Throws CancelledError when `signal` fires. */
@@ -64,14 +70,9 @@ export async function runJob(req: CompileRequest, signal?: AbortSignal): Promise
   const slot = await slots.acquire(signal);
   let job: Job | null = null;
   try {
-    const files: Record<string, string> = { [SOURCE_NAME]: req.code };
-    if (req.files) {
-      for (const [name, content] of Object.entries(req.files)) {
-        if (name && content !== undefined) {
-          files[name] = content;
-        }
-      }
-    }
+    // validateRequest has checked every path; the entry always wins over a
+    // stale copy of itself in `files`.
+    const files: Record<string, string> = { ...req.files, [entryOf(req)]: req.code };
     job = await createJob(slot, files);
     return await compileAndRun(job, req, signal);
   } finally {
@@ -81,14 +82,14 @@ export async function runJob(req: CompileRequest, signal?: AbortSignal): Promise
 }
 
 async function compileAndRun(job: Job, req: CompileRequest, signal?: AbortSignal): Promise<CompileResponse> {
-  if (req.mode === "format") return format(job, signal);
+  if (req.mode === "format") return format(job, entryOf(req), signal);
   const args = ["--no-color"];
   for (const inc of config.includeDirs) args.push("-I", inc);
   if (req.mode === "run" || (req.mode === "emit" && req.emit === "ir")) args.push(`-${req.opt ?? "O2"}`);
   if (req.mode === "check") args.push("--check");
   if (req.mode === "emit") args.push("--emit", req.emit!);
   if (req.mode === "run") args.push("-o", PROGRAM_NAME);
-  args.push(SOURCE_NAME);
+  args.push(entryOf(req));
 
   const c = await runCompiler(job, args, signal);
   const { diagnostics, other } = parseDiagnostics(c.stderr);
@@ -150,8 +151,8 @@ function compilerNote(c: { timedOut: boolean; signal: string | null }): string {
  * it cannot format (one that does not parse) as it was, so `formatted`
  * is then the input.
  */
-async function format(job: Job, signal?: AbortSignal): Promise<CompileResponse> {
-  const c = await runCompiler(job, ["fmt", SOURCE_NAME], signal);
+async function format(job: Job, entry: string, signal?: AbortSignal): Promise<CompileResponse> {
+  const c = await runCompiler(job, ["fmt", entry], signal);
   const ok = c.exitCode === 0 && !c.timedOut;
   const { diagnostics, other } = parseDiagnostics(c.stderr);
   const response: CompileResponse = {
@@ -162,7 +163,7 @@ async function format(job: Job, signal?: AbortSignal): Promise<CompileResponse> 
     compilerOutput: (compilerNote(c) + other).trim(),
     compileTimeMs: c.ms,
   };
-  if (ok) response.formatted = await readFile(path.join(job.dir, SOURCE_NAME), "utf8");
+  if (ok) response.formatted = await readFile(path.join(job.dir, entry), "utf8");
   return response;
 }
 

@@ -14,6 +14,11 @@ browser (React)  ──POST /api/compile──▶  server/ (Node)  ──▶  bi
 ## Features
 
 - **A real code editor** ([CodeMirror 6](https://codemirror.net), as in Replit): Biton highlighting that follows the compiler's lexer, auto-indent, bracket matching and auto-closing, code folding, multiple cursors, find and replace, comment toggling, and completion of keywords, snippets, names in the file and `import std.<module>` modules and their exports.
+- **Optional inline AI suggestions** (ghost text, as in Copilot), backed by any OpenAI-compatible provider (Gemini, Groq, OpenRouter, or a local Ollama model). After a pause in typing, a suggestion appears in faint text after the cursor: **Tab** accepts it, **Ctrl/⌘+→** accepts one word, **Esc** dismisses it, and **Alt+\\** asks for one on demand; typing the suggested characters keeps the rest. The modules the file imports are sent along as context. Requests are debounced, cancelled when you keep typing, cached, and back off on rate limits; the status bar shows what the AI is doing. The provider key stays on the server. Toggle it in the top bar or with `ai on|off` in the console. Off until `AI_ENABLED=1` is configured (see [`.env.example`](.env.example)).
+- **A projects home screen**: the app opens on your projects (most recently opened first, with "continue where you left off", search, and per-project open, rename, duplicate, download as .zip and delete with undo). Start a new project empty, from the multi-file starter, or from **Crypt of the Biton Crystal** (a roguelike game in six modules: generated dungeons, monsters, loot, breadth-first-search path-finding and an AI autopilot; type moves `wasd` on stdin or watch it play, and the argument is the dungeon seed), or import a .zip or folder (or drop one on the page). Each project has its own files, tabs, entry point, stdin and arguments; editor preferences are shared. A project opens at `?p=<id>`, so Back returns to the list; the logo in the IDE goes home and the project name renames it. Share links open as a new project rather than replacing yours. A workspace saved by an earlier version becomes "My project".
+- **Multi-file projects with an IDE-style explorer**: a file tree with folders (collapsible, indent guides, problem markers per file and folder), inline create and rename (F2) with validation, a context menu (new file/folder, rename, duplicate, download, copy path, set as entry point, delete), keyboard navigation (arrows, Enter, F2, Delete), drag-and-drop to move files and folders, and drop or upload of files, whole folders and `.zip` archives (binary and oversized files are skipped and reported; replacing existing files asks first). Deletes can be undone from the toast. Download a file, a folder or the whole project as `.zip`.
+- **Editor tabs**: open files as tabs (drag to reorder, middle-click or Alt+W to close, close others/to the right/all), each with its own undo history, cursor and scroll position; **Ctrl/⌘+P** goes to any file by fuzzy name.
+- **Imports across files**: every file is sent with each request and written at its path, so `import util.geo` resolves from the importing file's folder exactly as the compiler does locally. **Run** starts from the entry point (`main.bit` unless you choose another, shown with ▶); the live check, formatting and the pipeline work on the open file. Diagnostics in imported modules show on their own tab and in the tree, and clicking one opens that file.
 - **Light and dark themes**, or follow the system; chosen in the top bar (or `theme light|dark|system` in the console), applied before the first paint.
 - **An IDE layout**: a side panel (files and examples, the language reference, the standard library, each searchable), the editor, and a resizable Console / Input / Problems / Pipeline pane beside it (under it on narrow screens), and a status bar with the cursor position, errors and warnings, and the font size.
 
@@ -24,10 +29,10 @@ browser (React)  ──POST /api/compile──▶  server/ (Node)  ──▶  bi
 - **Formatting** with `biton fmt` (Shift+Alt+F), as one undo step.
 - **Examples**: nine programs in the current (beta) syntax: basics and printing, structs/enums/unions, errors as values, generics and traits, closures, collections (`Vec`, `Map`, sorting, `Text`), pointers and ownership, stdin and arguments, and maths with seeded randomness. `npm run test:examples` runs each one with the real compiler and compares its output with `src/examples/<name>.out`.
 - **Language and stdlib reference** in the sidebar (`src/reference.ts`), taken from `../biton/README.md`, `grammar/biton.bnf` and `stdlib/*.bit`.
-- **Share links**: the code, stdin and arguments, compressed into the URL fragment (never sent to the server).
-- **Your work is kept** in the browser (code, input, `-O` level, layout) across reloads.
-- **Console commands**: `run`, `check`, `fmt`, `emit <kind>`, `args [...]`, `opt <O0..O3>`, `theme`, `share`, `login`/`logout`, `version`, `clear`, `help` (↑/↓ for history).
-- **Shortcuts**: Ctrl/⌘+Enter run · Esc stop · Shift+Alt+F format · Ctrl/⌘+F find · Ctrl/⌘+/ comment · Ctrl/⌘+Space complete · Ctrl/⌘+B side panel · Ctrl/⌘+J output pane · Ctrl/⌘+S save.
+- **Share links**: the code (or, for a project, every file), stdin and arguments, compressed into the URL fragment (never sent to the server). Opening a shared project asks before replacing yours, and can be undone.
+- **Your work is kept** in the browser (files, open tabs, entry point, input, `-O` level, layout) across reloads. If storage is full you are told and offered a download; if another tab changes the same project, saving pauses until you choose which version to keep.
+- **Console commands**: `run`, `check`, `fmt`, `emit <kind>`, `ls`, `open <path>`, `entry [path]`, `args [...]`, `opt <O0..O3>`, `theme`, `ai [on|off]`, `share`, `login`/`logout`, `version`, `clear`, `help` (↑/↓ for history).
+- **Shortcuts**: Ctrl/⌘+Enter run · Esc stop · Shift+Alt+F format · Ctrl/⌘+P go to file · Alt+W close tab · Ctrl/⌘+F find · Ctrl/⌘+/ comment · Ctrl/⌘+Space complete · Ctrl/⌘+B side panel · Ctrl/⌘+J output pane · Ctrl/⌘+S save · in the explorer: arrows, Enter, F2, Delete.
 - **Works on small screens**: the side panel opens over the editor and the output pane goes under it.
 - **Sign-in with Google or an emailed link**, required to run programs (checking, formatting and the pipeline view stay open to everyone). See [Sign-in](#sign-in).
 
@@ -147,7 +152,8 @@ kills the job, or drops it from the queue if it hasn't started.
 |---|---|---|
 | Runs | 20/min, burst 10 | `mode: "run"` |
 | Checks | 120/min, burst 40 | `check`, `emit` and `format`. Cache hits are free, so the live check rarely uses it. |
-| Concurrency | 3 jobs per client | everything that reaches the worker |
+| AI | 30/min, burst 10 | `/api/complete`, when AI completion is enabled |
+| Concurrency | 3 jobs per client | everything that reaches the worker or the AI provider |
 
 Refusals are HTTP 429 with `Retry-After` and `RateLimit-*` headers. The
 editor backs off on its own: the live check retries silently, and a run
@@ -159,6 +165,16 @@ queue (`MAX_QUEUE`) is the global backstop.
 memory (`CACHE_MB`), keyed by compiler version and source. Program runs are
 never cached.
 
+**AI completion** is opt-in. Set `AI_ENABLED=1` plus `AI_BASE_URL`,
+`AI_MODEL` and (for hosted providers) `AI_API_KEY`. Any OpenAI-compatible
+endpoint works: Gemini's compatibility API, Groq, OpenRouter, or a local
+Ollama server. The browser never sees the key; the editor sends only
+`AI_MAX_BEFORE`/`AI_MAX_AFTER` characters around the cursor. In production it
+requires a signed-in user by default (`AI_REQUIRE_SIGNIN=0` lets anonymous
+users call it, still rate-limited). The API container needs outbound HTTPS to
+the provider. See [`.env.example`](.env.example) for ready-made Gemini, Groq,
+OpenRouter and Ollama examples.
+
 ## API
 
 `POST /api/compile`
@@ -169,8 +185,18 @@ never cached.
   "emit": "ir",           // with mode "emit": tokens | ast | hir | typed-hir | mir | ir
   "opt": "O2",            // O0 | O1 | O2 | O3
   "stdin": "",            // optional program input (run)
-  "args": ["a", "b c"] }  // optional program arguments (run; at most 64, 1 KiB each)
+  "args": ["a", "b c"],   // optional program arguments (run; at most 64, 1 KiB each)
+  "entry": "src/app.bit", // optional path of `code` in the project (default main.bit)
+  "files": {              // optional other project files, written next to it
+    "src/util/geo.bit": "fn area(w: int, h: int) int { return w * h }" } }
 ```
+
+Project paths are relative and slash-separated; each part uses letters,
+digits, `_`, `-` and `.` and cannot start with a dot (so no `..`), at most 8
+levels and 200 characters, at most 200 files. The whole project (`code` plus
+`files`) is limited by `MAX_PROJECT_BYTES` (512 KiB by default), and the
+compiler runs on `entry` in place, so imports resolve from its folder.
+Diagnostics carry the project path of the file they are in.
 
 The response (types in [`shared/api.ts`](shared/api.ts)) has `success`,
 `failedAt` (`"compile"` / `"run"` / `null`), and `diagnostics[]`. Each
@@ -187,7 +213,16 @@ With sign-in required, a `run` without a session gets HTTP 401 with
 `GET /api/auth/google` (and its `/callback`), `POST /api/auth/email`
 `{ email }`, `POST /api/auth/email/verify` `{ token }`, `POST /api/auth/logout`.
 
-`GET /api/health` returns the compiler version, the sandbox mode and the limits. `GET /healthz` (liveness) and `GET /readyz` (the worker is reachable) are for orchestrators.
+`POST /api/complete` returns `{ "completion": "..." }` for the text to insert
+at the cursor. Its request is `{ "before": "...", "after": "...", "file":
+"main.bit", "related": [{ "path": "geo.bit", "content": "..." }] }`
+(`related` is optional: up to 4 other project files of up to 3000 characters,
+usually the modules the file imports). The answer is cleaned up: markdown
+fences and echoed prompt tags are removed, as is text that repeats the start
+of the line or the brackets already after the cursor. It is available only
+when `AI_ENABLED=1`, and returns 401 when a signed-in user is required.
+
+`GET /api/health` returns the compiler version, the sandbox mode, the limits and `ai: { enabled, requireSignIn }`. `GET /healthz` (liveness) and `GET /readyz` (the worker is reachable) are for orchestrators.
 
 ## Project layout
 
@@ -199,18 +234,28 @@ server/compiler.ts     compile / check / emit / format / run a job with the real
 server/sandbox.ts      job slots and queue, per-job uids, rlimits, cleanup, startup self-checks
 server/exec.ts         child processes with timeout, output cap and cancellation
 server/cache.ts        LRU cache for deterministic results
+server/ai.ts           OpenAI-compatible AI completion proxy (+ prompt and response cleanup)
 server/ratelimit.ts    per-client token buckets, concurrency cap, proxy-aware client IPs
 server/diagnostics.ts  parses biton's rendered diagnostics (compiler/diagnostics in ../biton)
 scripts/               stage-compiler.sh, security-check.sh
 shared/api.ts          request/response types used by both sides
 src/examples/          example programs (.bit), their expected output (.out) and manifest.ts
 src/reference.ts       the sidebar's language and stdlib reference
-src/editor/            CodeMirror: the Biton language (highlighting, indentation, folding, completion) and the editor component
+src/editor/            CodeMirror: the Biton language (highlighting, indentation, folding, completion), inline AI suggestions (ai.ts) and the editor component (one view, a state per file)
+src/lib/project.ts     the project model: paths, tree, create/move/copy/delete, imports, entry point (pure, tested)
+src/lib/useProject.ts  the project as React state: files, tabs, active file, entry, recent files
+src/lib/projects.ts    projects in localStorage: index, per-project records, migration (tested)
+src/lib/useAuth.ts     sign-in state shared by the home screen and the IDE
+src/App.tsx            shell: home or ?p=<id>, sign-in, share links;  src/Workspace.tsx  the IDE for one project
+src/components/home/   the projects home screen
+src/templates/         new-project templates: blank, the multi-file starter, the crypt game (all run by test/examples.test.ts)
+src/lib/zip.ts         .zip export/import on CompressionStream;  src/lib/importFiles.ts  uploads and drops
+src/lib/fuzzy.ts       fuzzy file matching for Ctrl/⌘+P
+src/components/files/  explorer tree, editor tabs, quick open, file icons
 src/lib/tokenize.ts    highlighter matching biton's lexer, for snippets outside the editor
 src/lib/theme.ts       light/dark/system theme (public/theme-init.js applies it before first paint)
 src/index.css          design tokens for both themes (every colour is a CSS variable)
 src/lib/share.ts       share links;  src/lib/storage.ts  the saved workspace;  src/lib/args.ts  argument parsing
-src/lib/useHistory.ts  undo/redo, grouping each burst of typing into one step
 src/components/        layout (top bar, side panel, split, status bar), output (console, input, problems, pipeline), auth, ui primitives
 test/examples.test.ts  every example through the real compiler and the job pipeline
 ```

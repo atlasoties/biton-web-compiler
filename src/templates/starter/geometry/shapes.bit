@@ -1,0 +1,8 @@
+// A module in a folder: `import geometry.shapes`, then `shapes.area(...)`.
+fn area(w: int, h: int) int {
+    return w * h
+}
+
+fn perimeter(w: int, h: int) int {
+    return 2 * (w + h)
+}

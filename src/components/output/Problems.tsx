@@ -1,18 +1,19 @@
 import { AlertTriangle, CheckCircle2, Info, Loader2, XCircle } from "lucide-react";
 
 import type { Diagnostic } from "../../../shared/api.ts";
-import { SOURCE_FILE, inBuffer } from "../../lib/state";
 import { cx } from "../ui";
 
 interface ProblemsProps {
   diagnostics: Diagnostic[];
   stale: boolean;
   checking: boolean;
+  /** Whether a diagnostic points at a project file that can be opened. */
+  canOpen: (d: Diagnostic) => boolean;
   onSelect: (d: Diagnostic) => void;
 }
 
-/** The compiler's diagnostics for the buffer, from `biton --check` as you type. */
-export default function Problems({ diagnostics, stale, checking, onSelect }: ProblemsProps) {
+/** The compiler's diagnostics for the open file and what it imports, from `biton --check` as you type. */
+export default function Problems({ diagnostics, stale, checking, canOpen, onSelect }: ProblemsProps) {
   if (diagnostics.length === 0) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-2 bg-surface text-center p-6">
@@ -30,7 +31,7 @@ export default function Problems({ diagnostics, stale, checking, onSelect }: Pro
         const err = d.severity === "error" || d.severity === "fatal";
         const warn = d.severity === "warning";
         const Icon = err ? XCircle : warn ? AlertTriangle : Info;
-        const clickable = inBuffer(d);
+        const clickable = canOpen(d);
         return (
           <button
             key={i}
@@ -48,7 +49,7 @@ export default function Problems({ diagnostics, stale, checking, onSelect }: Pro
                 {d.code && <span>{d.code}</span>}
                 {d.line > 0 && (
                   <span>
-                    {d.file && d.file !== SOURCE_FILE ? d.file : SOURCE_FILE}:{d.line}:{d.col}
+                    {d.file ?? "?"}:{d.line}:{d.col}
                   </span>
                 )}
               </div>

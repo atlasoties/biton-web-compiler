@@ -5,12 +5,6 @@
 const KEY = "biton-web-compiler:v4";
 const OLD_KEY = "biton-web-compiler:v3";
 
-export interface FileEntry {
-  name: string;
-  content: string;
-  isFolder?: boolean;
-}
-
 export interface Saved {
   code?: string;
   stdin?: string;
@@ -23,10 +17,22 @@ export interface Saved {
   /** Share of the width (or height, stacked) the output pane takes. */
   split?: number;
   fontSize?: number;
-  /** Multi-file project support */
+  /** Whether AI completion is enabled in the editor. */
+  ai?: boolean;
+  /** The project: path → text; keys ending in "/" are folders (see lib/project.ts). */
   files?: Record<string, string>;
-  activeFile?: string;
+  /** File shown in the editor, or null when every tab is closed. */
+  activeFile?: string | null;
+  /** Open editor tabs, in order. */
+  tabs?: string[];
+  /** File Run compiles and runs. */
+  entry?: string | null;
+  /** Recently opened files, most recent first (for quick open). */
+  recent?: string[];
 }
+
+/** True when a `storage` event means another tab saved its workspace. */
+export const savedElsewhere = (e: StorageEvent) => e.key === KEY && e.newValue !== null;
 
 export function load(): Saved {
   try {
@@ -38,10 +44,12 @@ export function load(): Saved {
   }
 }
 
-export function save(s: Saved) {
+/** Save the workspace; false when storage is full or unavailable. */
+export function save(s: Saved): boolean {
   try {
     localStorage.setItem(KEY, JSON.stringify(s));
+    return true;
   } catch {
-    /* full or unavailable: the workspace just won't persist */
+    return false;
   }
 }

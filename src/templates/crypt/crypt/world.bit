@@ -1,0 +1,192 @@
+// The world: the map of the current level, the hero, the monsters and the
+// loot, and how to draw it all as text.
+import std.vec.{Vec}
+import std.random.{Rng}
+
+pub const W: int = 48
+pub const H: int = 17
+pub const DEPTHS: int = 3
+
+pub const WALL: int = 0
+pub const FLOOR: int = 1
+pub const STAIRS: int = 2
+
+pub type Kind { Rat, Goblin, Orc, Wraith }
+
+pub type Monster { pub kind: Kind, pub x: int, pub y: int, pub hp: int, pub alive: bool }
+
+pub type Loot { Gold(int), Potion, Crystal }
+
+pub type Item { pub loot: Loot, pub x: int, pub y: int, pub taken: bool }
+
+pub type Room { pub x: int, pub y: int, pub w: int, pub h: int }
+
+pub type World {
+    pub tiles: [H][W]int,
+    pub rooms: Vec[Room],
+    pub monsters: Vec[Monster],
+    pub items: Vec[Item],
+    pub rng: Rng,
+    pub depth: int,
+    pub hx: int,
+    pub hy: int,
+    pub hp: int,
+    pub max_hp: int,
+    pub power: int,
+    pub gold: int,
+    pub kills: int,
+    pub potions: int,
+    pub turn: int,
+    pub level: int,
+    pub rested: bool,
+    // The autopilot is resting until it is mostly healed.
+    pub resting: bool,
+    pub won: bool,
+    pub dead: bool
+}
+
+// --- monsters ---
+
+pub fn name(k: Kind) string {
+    return when k {
+        Rat -> "rat",
+        Goblin -> "goblin",
+        Orc -> "orc",
+        Wraith -> "wraith"
+    }
+}
+
+pub fn glyph(k: Kind) string {
+    return when k {
+        Rat -> "r",
+        Goblin -> "g",
+        Orc -> "O",
+        Wraith -> "W"
+    }
+}
+
+pub fn toughness(k: Kind) int {
+    return when k {
+        Rat -> 3,
+        Goblin -> 6,
+        Orc -> 11,
+        Wraith -> 16
+    }
+}
+
+// Monsters to stay away from while hurt.
+pub fn dangerous(k: Kind) bool {
+    return when k {
+        Orc, Wraith -> true,
+        else -> false
+    }
+}
+
+pub fn strength(k: Kind) int {
+    return when k {
+        Rat -> 1,
+        Goblin -> 2,
+        Orc -> 5,
+        Wraith -> 6
+    }
+}
+
+// --- the map ---
+
+pub fn inside(x: int, y: int) bool {
+    return x >= 0 and y >= 0 and x < W and y < H
+}
+
+pub fn open(w: *World, x: int, y: int) bool {
+    return inside(x, y) and w.tiles[y][x] != WALL
+}
+
+// Index of the living monster at (x, y), or -1.
+pub fn monster_at(w: *World, x: int, y: int) int {
+    for i in 0..w.monsters.len() {
+        m := w.monsters.at(i)
+        if m.alive and m.x == x and m.y == y { return i }
+    }
+    return -1
+}
+
+// Index of the untaken item at (x, y), or -1.
+pub fn item_at(w: *World, x: int, y: int) int {
+    for i in 0..w.items.len() {
+        it := w.items.at(i)
+        if not it.taken and it.x == x and it.y == y { return i }
+    }
+    return -1
+}
+
+fn item_glyph(l: Loot) string {
+    return when l {
+        Gold(_) -> "$",
+        Potion -> "!",
+        Crystal -> "*"
+    }
+}
+
+// A wall is drawn only where it borders a floor, so the rock between rooms stays blank.
+fn shows_wall(w: *World, x: int, y: int) bool {
+    for dy in -1..2 {
+        for dx in -1..2 {
+            if open(w, x + dx, y + dy) { return true }
+        }
+    }
+    return false
+}
+
+fn bar(value: int, max: int, width: int) Text {
+    b: Text
+    filled := 0
+    if max > 0 and value > 0 { filled = (value * width + max - 1) / max }
+    for i in 0..width {
+        if i < filled { b.push_str("#") } else { b.push_str("-") }
+    }
+    return b
+}
+
+pub fn status(w: *World) Text {
+    s: Text
+    hp := w.hp
+    if hp < 0 { hp = 0 }
+    s.append("Depth {w.depth}/{DEPTHS}  HP [{bar(hp, w.max_hp, 10)}] {hp}/{w.max_hp}  Level {w.level}  ")
+    s.append("Gold {w.gold}  Potions {w.potions}  Kills {w.kills}  Turn {w.turn}")
+    return s
+}
+
+pub fn draw(w: *World) {
+    edge: Text
+    edge.push_str("+")
+    for _ in 0..W { edge.push_str("-") }
+    edge.push_str("+")
+    print(edge)
+    for y in 0..H {
+        row: Text
+        row.push_str("|")
+        for x in 0..W {
+            m := monster_at(w, x, y)
+            it := item_at(w, x, y)
+            if x == w.hx and y == w.hy {
+                row.push_str("@")
+            } elif m >= 0 {
+                row.push_str(glyph(w.monsters.at(m).kind))
+            } elif it >= 0 {
+                row.push_str(item_glyph(w.items.at(it).loot))
+            } elif w.tiles[y][x] == STAIRS {
+                row.push_str(">")
+            } elif w.tiles[y][x] == FLOOR {
+                row.push_str(".")
+            } elif shows_wall(w, x, y) {
+                row.push_str("#")
+            } else {
+                row.push_str(" ")
+            }
+        }
+        row.push_str("|")
+        print(row)
+    }
+    print(edge)
+    print(status(w))
+}

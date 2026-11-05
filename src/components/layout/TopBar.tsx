@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronDown, Loader2, Monitor, Moon, PanelLeft, PanelRight, Play, Share2, Sparkles, Square, Sun } from "lucide-react";
+import { Check, ChevronDown, Home, Loader2, Monitor, Moon, PanelLeft, PanelRight, Play, Share2, Sparkles, Square, Sun, WandSparkles } from "lucide-react";
 
 import { OPT_LEVELS, type OptLevel } from "../../../shared/api.ts";
 import type { Busy } from "../../lib/state";
 import type { ThemePref } from "../../lib/theme";
+import { PromptDialog } from "../Dialog";
 import { Button, IconButton, Kbd, Logo, cx } from "../ui";
 
 interface TopBarProps {
@@ -21,8 +22,17 @@ interface TopBarProps {
   toggleSidebar: () => void;
   showPanel: boolean;
   togglePanel: () => void;
-  /** e.g. "Basics" when an unmodified example is open. */
+  /** The server has an AI provider configured. */
+  aiAvailable: boolean;
+  /** AI completion is actively running (configured, switched on and signed in if needed). */
+  aiEnabled: boolean;
+  toggleAI: () => void;
+  /** The open file (or example) shown after the project name. */
   title: string;
+  projectName: string;
+  /** Back to the project list. */
+  onHome: () => void;
+  onRenameProject: (name: string) => void;
 }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -101,7 +111,7 @@ const THEMES: Array<{ key: ThemePref; label: string; Icon: typeof Sun }> = [
   { key: "system", label: "System", Icon: Monitor },
 ];
 
-function ThemeMenu({ pref, setPref }: { pref: ThemePref; setPref: (p: ThemePref) => void }) {
+export function ThemeMenu({ pref, setPref }: { pref: ThemePref; setPref: (p: ThemePref) => void }) {
   const m = useMenu();
   const Current = THEMES.find((t) => t.key === pref)!.Icon;
   return (
@@ -135,6 +145,7 @@ function ThemeMenu({ pref, setPref }: { pref: ThemePref; setPref: (p: ThemePref)
 
 export default function TopBar(p: TopBarProps) {
   const running = p.busy === "run";
+  const [renaming, setRenaming] = useState(false);
   return (
     <header className="h-12 shrink-0 flex items-center gap-1.5 sm:gap-2 px-1.5 sm:px-3 border-b border-line bg-surface">
       {/* left */}
@@ -142,14 +153,44 @@ export default function TopBar(p: TopBarProps) {
         <IconButton label="Toggle side panel" onClick={p.toggleSidebar} active={p.showSidebar} aria-pressed={p.showSidebar}>
           <PanelLeft className="w-4 h-4" />
         </IconButton>
-        <div className="flex items-center gap-2 min-w-0 pl-1">
-          <Logo className="w-6 h-6 shrink-0 hidden min-[420px]:block" />
-          <div className="hidden sm:flex items-center gap-1.5 min-w-0 text-[13px]">
-            <span className="font-semibold text-fg whitespace-nowrap">Biton</span>
-            <span className="text-faint">/</span>
-            <span className="text-muted truncate">{p.title}</span>
+        <div className="flex items-center gap-1 min-w-0 pl-1">
+          <button
+            type="button"
+            onClick={p.onHome}
+            title="All projects"
+            aria-label="All projects"
+            className="group relative w-7 h-7 shrink-0 rounded-md flex items-center justify-center hover:bg-hover"
+          >
+            <Logo className="w-6 h-6 group-hover:opacity-0 transition-opacity" />
+            <Home className="w-4 h-4 absolute opacity-0 group-hover:opacity-100 text-fg transition-opacity" />
+          </button>
+          <div className="flex items-center gap-1 min-w-0 text-[13px]">
+            <button
+              type="button"
+              onClick={() => setRenaming(true)}
+              title="Rename project"
+              className="font-semibold text-fg truncate max-w-[40vw] sm:max-w-[220px] px-1.5 h-7 rounded-md hover:bg-hover"
+            >
+              {p.projectName}
+            </button>
+            <span className="text-faint hidden md:inline">/</span>
+            <span className="text-muted truncate hidden md:inline">{p.title}</span>
           </div>
         </div>
+        {renaming && (
+          <PromptDialog
+            title="Rename project"
+            label="Project name"
+            initialValue={p.projectName}
+            confirmLabel="Rename"
+            validate={(v) => (v.trim().length > 80 ? "Use at most 80 characters." : null)}
+            onConfirm={(v) => {
+              setRenaming(false);
+              p.onRenameProject(v.trim());
+            }}
+            onClose={() => setRenaming(false)}
+          />
+        )}
       </div>
 
       {/* centre: run */}
@@ -178,6 +219,21 @@ export default function TopBar(p: TopBarProps) {
       {/* right */}
       <div className="flex items-center justify-end gap-0.5 sm:gap-1 flex-1 min-w-0">
         <div className="hidden sm:flex items-center gap-1">
+          <IconButton
+            label={p.aiEnabled ? "AI completion on" : "AI completion off"}
+            title={
+              !p.aiAvailable
+                ? "AI completion is not configured on the server"
+                : p.aiEnabled
+                  ? "AI completion is on (click to turn off)"
+                  : "AI completion is off (click to turn on)"
+            }
+            onClick={p.toggleAI}
+            disabled={!p.aiAvailable}
+            active={p.aiEnabled}
+          >
+            <WandSparkles className="w-4 h-4" />
+          </IconButton>
           <IconButton label="Format document (Shift+Alt+F)" onClick={p.format} disabled={p.busy === "format"}>
             {p.busy === "format" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
           </IconButton>

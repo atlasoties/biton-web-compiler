@@ -100,13 +100,33 @@ export async function createJob(slot: number, files: Record<string, string>): Pr
   if (config.sandbox === "uid") {
     job.uid = job.gid = uidFor(slot);
   }
-  for (const [name, content] of Object.entries(files)) {
-    const file = path.join(dir, name);
-    await writeFile(file, content, { mode: 0o600 });
-    if (job.uid !== undefined) await chown(file, job.uid, job.gid!);
+  try {
+    await writeJobFiles(job, files);
+  } catch (e) {
+    await rm(dir, { recursive: true, force: true });
+    throw e;
   }
   if (job.uid !== undefined) await chown(dir, job.uid, job.gid!);
   return job;
+}
+
+async function writeJobFiles(job: Job, files: Record<string, string>) {
+  const root = path.resolve(job.dir);
+  for (const [name, content] of Object.entries(files)) {
+    // Paths were validated against projectPathProblem; this is a second guard.
+    const file = path.resolve(root, name);
+    if (!file.startsWith(root + path.sep)) throw new Error(`refusing to write outside the job: ${name}`);
+    // Create (and hand over) any folders on the way.
+    const parts = path.relative(root, file).split(path.sep).slice(0, -1);
+    for (let i = 1; i <= parts.length; i++) {
+      const sub = path.join(root, ...parts.slice(0, i));
+      if (await mkdir(sub, { mode: 0o700 }).then(() => true, (e) => (e.code === "EEXIST" ? false : Promise.reject(e)))) {
+        if (job.uid !== undefined) await chown(sub, job.uid, job.gid!);
+      }
+    }
+    await writeFile(file, content, { mode: 0o600 });
+    if (job.uid !== undefined) await chown(file, job.uid, job.gid!);
+  }
 }
 
 /** Kill everything the job left behind and delete its directory. */

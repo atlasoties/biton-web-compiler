@@ -1,0 +1,10 @@
+// The entry point: Run compiles this file and everything it imports.
+import geometry.shapes
+import greet
+
+fn main() int {
+    greet.hello("Biton")
+    print("area: {shapes.area(3, 4)}")
+    print("perimeter: {shapes.perimeter(3, 4)}")
+    return 0
+}

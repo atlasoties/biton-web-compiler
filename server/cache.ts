@@ -26,7 +26,18 @@ export class ResultCache {
   static key(compilerVersion: string, req: CompileRequest): string {
     const opt = req.mode === "emit" && req.emit === "ir" ? (req.opt ?? "O2") : "";
     return createHash("sha256")
-      .update(JSON.stringify([compilerVersion, req.mode, req.emit ?? "", opt, req.code]))
+      .update(
+        JSON.stringify([
+          compilerVersion,
+          req.mode,
+          req.emit ?? "",
+          opt,
+          req.entry ?? "",
+          req.code,
+          // Every other file can change the result (imports), in a stable order.
+          Object.entries(req.files ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        ]),
+      )
       .digest("hex");
   }
 

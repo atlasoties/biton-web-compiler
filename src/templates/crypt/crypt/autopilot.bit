@@ -1,0 +1,73 @@
+// The autopilot: plays when there are no more moves from the input.
+// It drinks when badly hurt, fights monsters that come close, collects what
+// it can reach, and otherwise heads for the stairs (or the crystal).
+import crypt.world.{World, W, H, STAIRS, dangerous}
+import crypt.path.{Distances, UNREACHABLE, flood, first_step}
+import crypt.rules.{Command}
+
+fn toward(w: *World, tx: int, ty: int) Command {
+    to: Distances
+    flood(w, tx, ty, &to)
+    return when first_step(w.hx, w.hy, &to) {
+        0 -> Command.Up,
+        1 -> Command.Down,
+        2 -> Command.Left,
+        3 -> Command.Right,
+        else -> Command.Wait
+    }
+}
+
+pub fn decide(w: *World) Command {
+    if w.potions > 0 and w.hp * 100 <= w.max_hp * 40 { return Command.Drink }
+
+    hurt := w.hp * 100 < w.max_hp * 50
+
+    here: Distances
+    flood(w, w.hx, w.hy, &here)
+
+    // A monster within a few steps: deal with it before it deals with us,
+    // unless we are hurt and it is a big one that hasn't reached us yet.
+    best := -1
+    best_steps := 0
+    nearest_threat := 99
+    for i in 0..w.monsters.len() {
+        m := w.monsters.at(i)
+        s := here.steps[m.y][m.x]
+        if not m.alive or s == UNREACHABLE { continue }
+        if s < nearest_threat { nearest_threat = s }
+        if s > 3 or (hurt and dangerous(m.kind) and s > 1) { continue }
+        if best == -1 or s < best_steps {
+            best = i
+            best_steps = s
+        }
+    }
+    if best >= 0 {
+        m := w.monsters.at(best)
+        return toward(w, m.x, m.y)
+    }
+
+    // Hurt, no potion and nothing close by: rest until mostly healed.
+    w.resting = w.potions == 0 and nearest_threat > 7 and w.hp * 100 < w.max_hp * 80 and (hurt or w.resting)
+    if w.resting { return Command.Wait }
+
+    // The nearest thing worth picking up.
+    for i in 0..w.items.len() {
+        it := w.items.at(i)
+        s := here.steps[it.y][it.x]
+        if not it.taken and s != UNREACHABLE and (best == -1 or s < best_steps) {
+            best = i
+            best_steps = s
+        }
+    }
+    if best >= 0 {
+        it := w.items.at(best)
+        return toward(w, it.x, it.y)
+    }
+
+    for y in 0..H {
+        for x in 0..W {
+            if w.tiles[y][x] == STAIRS { return toward(w, x, y) }
+        }
+    }
+    return Command.Wait
+}

@@ -226,15 +226,18 @@ interface ConfirmDialogProps {
   destructive?: boolean;
   onConfirm: () => void;
   onClose: () => void;
+  /** An optional third choice between Cancel and the confirm button. */
+  alternative?: { label: string; onSelect: () => void };
 }
 
-export function ConfirmDialog({ title, description, confirmLabel = "Delete", destructive = false, onConfirm, onClose }: ConfirmDialogProps) {
+export function ConfirmDialog({ title, description, confirmLabel = "Delete", destructive = false, onConfirm, onClose, alternative }: ConfirmDialogProps) {
   return (
     <Dialog title={title} description={description} onClose={onClose}>
       <div className="mt-5 flex items-center justify-end gap-2">
         <Button data-autofocus onClick={onClose}>
           Cancel
         </Button>
+        {alternative && <Button onClick={alternative.onSelect}>{alternative.label}</Button>}
         <Button variant={destructive ? "danger" : "primary"} onClick={onConfirm}>
           {confirmLabel}
         </Button>
