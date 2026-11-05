@@ -4,13 +4,17 @@ import {
   type AuthUser,
   type CompileRequest,
   type CompileResponse,
+  type CompleteRequest,
+  type CompleteResponse,
   type HealthResponse,
 } from "../../shared/api.ts";
 
 // Empty means same origin: in development Vite proxies /api to the compile
 // server (see vite.config.ts); in production the server serves the frontend.
 // Set VITE_API_BASE_URL only when the API lives on another origin.
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
+const API_BASE = (
+  (typeof import.meta.env === "object" ? import.meta.env.VITE_API_BASE_URL : "") ?? ""
+).replace(/\/+$/, "");
 
 /** HTTP 429 from the API; `retryAfter` is in seconds. */
 export class RateLimitError extends Error {
@@ -23,6 +27,15 @@ export class RateLimitError extends Error {
 
 /** HTTP 401: running programs needs a signed-in user (or the session expired). */
 export class SignInRequiredError extends Error {}
+
+/** Any other non-2xx response; `message` is the server's error text when it sent one. */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, init);
@@ -43,7 +56,7 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const msg = (body as { error?: string } | undefined)?.error;
-    throw new Error(msg ? `${msg} (HTTP ${res.status})` : `compile server returned HTTP ${res.status} ${res.statusText}`.trim());
+    throw new ApiError(msg ? `${msg} (HTTP ${res.status})` : `compile server returned HTTP ${res.status} ${res.statusText}`.trim(), res.status);
   }
   if (body === undefined) throw new Error("compile server returned a response that is not JSON");
   return body as T;
@@ -64,6 +77,11 @@ const postJson = (body: unknown, signal?: AbortSignal): RequestInit => ({
   body: JSON.stringify(body),
   signal,
 });
+
+/** Ask the server for an AI completion at the cursor. */
+export function completeWithAI(req: CompleteRequest, signal?: AbortSignal): Promise<CompleteResponse> {
+  return request<CompleteResponse>("/api/complete", postJson(req, signal));
+}
 
 export function getSession(signal?: AbortSignal): Promise<AuthStatus> {
   return request<AuthStatus>("/api/auth/session", { method: "GET", signal });

@@ -1,0 +1,63 @@
+// Breadth-first search over the map: how many steps every cell is from a
+// starting point, walking up, down, left and right.
+import crypt.world.{World, W, H, open}
+
+// W * H: room for every cell in the search queue
+const CELLS: int = 816
+
+pub type Distances { pub steps: [H][W]int }
+
+pub const UNREACHABLE: int = -1
+
+const DX: [4]int = [0, 0, -1, 1]
+const DY: [4]int = [-1, 1, 0, 0]
+
+pub fn flood(w: *World, sx: int, sy: int, d: *Distances) {
+    for y in 0..H {
+        for x in 0..W { d.steps[y][x] = UNREACHABLE }
+    }
+    qx: [CELLS]int
+    qy: [CELLS]int
+    head := 0
+    tail := 0
+    d.steps[sy][sx] = 0
+    qx[tail] = sx
+    qy[tail] = sy
+    tail += 1
+    while head < tail {
+        x := qx[head]
+        y := qy[head]
+        head += 1
+        for k in 0..4 {
+            nx := x + DX[k]
+            ny := y + DY[k]
+            if open(w, nx, ny) and d.steps[ny][nx] == UNREACHABLE {
+                d.steps[ny][nx] = d.steps[y][x] + 1
+                qx[tail] = nx
+                qy[tail] = ny
+                tail += 1
+            }
+        }
+    }
+}
+
+// The direction (0 up, 1 down, 2 left, 3 right) of the first step on a
+// shortest path from (x, y) to the cell `to` was flooded from; -1 if none.
+pub fn first_step(x: int, y: int, to: *Distances) int {
+    best := -1
+    best_steps := 0
+    for k in 0..4 {
+        nx := x + DX[k]
+        ny := y + DY[k]
+        if nx < 0 or ny < 0 or nx >= W or ny >= H { continue }
+        s := to.steps[ny][nx]
+        if s != UNREACHABLE and (best == -1 or s < best_steps) {
+            best = k
+            best_steps = s
+        }
+    }
+    return best
+}
+
+pub fn dx(dir: int) int { return DX[dir] }
+pub fn dy(dir: int) int { return DY[dir] }

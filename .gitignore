@@ -8,5 +8,7 @@ coverage/
 .env*
 !.env.example
 
+brag*
+skills-lock.json
 # compiler staged for the worker image (scripts/stage-compiler.sh)
 vendor/

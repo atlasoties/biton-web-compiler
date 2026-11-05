@@ -87,3 +87,85 @@ test("a crash is a failed run, a non-zero exit is not", { skip }, async () => {
   assert.notEqual(oob.run?.exitCode, 0);
   assert.match(oob.run!.stderr, /index|bounds|range/i);
 });
+
+// The new-project templates (src/templates): the multi-file starter goes
+// through the job pipeline as a project, with nested files and imports.
+const templates = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "templates");
+
+test("template blank runs", { skip }, async () => {
+  const res = await runJob({ code: readFileSync(path.join(templates, "blank.bit"), "utf8"), mode: "run" });
+  assert.equal(res.failedAt, null, res.diagnostics.map((d) => d.rendered).join("\n"));
+  assert.equal(res.run!.stdout, "Hello, Biton!\n");
+});
+
+test("template starter runs as a multi-file project", { skip }, async () => {
+  const read = (p: string) => readFileSync(path.join(templates, "starter", p), "utf8");
+  const res = await runJob({
+    code: read("main.bit"),
+    entry: "main.bit",
+    files: { "greet.bit": read("greet.bit"), "geometry/shapes.bit": read("geometry/shapes.bit") },
+    mode: "run",
+  });
+  assert.equal(res.failedAt, null, res.diagnostics.map((d) => d.rendered).join("\n") + res.compilerOutput);
+  assert.equal(res.run!.stdout, "Hello, Biton!\narea: 12\nperimeter: 14\n");
+});
+
+test("a diagnostic in an imported module names that module", { skip }, async () => {
+  const res = await runJob({
+    code: "import geometry.shapes\nfn main() int { return shapes.area(1, 2) }\n",
+    files: { "geometry/shapes.bit": 'fn area(w: int, h: int) int {\n    return "x"\n}\n' },
+    mode: "check",
+  });
+  assert.equal(res.success, false);
+  assert.equal(res.diagnostics[0].file, "geometry/shapes.bit");
+  assert.equal(res.diagnostics[0].line, 2);
+});
+
+// The game template: a multi-file project played through the job pipeline.
+function cryptProject() {
+  const root = path.join(templates, "crypt");
+  const read = (p: string) => readFileSync(path.join(root, p), "utf8");
+  const modules = ["world", "dungeon", "path", "rules", "autopilot"];
+  return {
+    code: read("main.bit"),
+    files: Object.fromEntries(modules.map((m) => [`crypt/${m}.bit`, read(`crypt/${m}.bit`)])),
+  };
+}
+
+test("template crypt: the autopilot wins the default dungeon", { skip }, async () => {
+  const res = await runJob({ ...cryptProject(), mode: "run", args: ["33"] });
+  assert.equal(res.failedAt, null, res.diagnostics.map((d) => d.rendered).join("\n") + res.compilerOutput);
+  assert.deepEqual(res.diagnostics, [], "no warnings either");
+  const out = res.run!.stdout;
+  assert.match(out, /^CRYPT OF THE BITON CRYSTAL {3}\(seed 33\)/);
+  assert.match(out, /No moves on stdin: the autopilot plays\./);
+  assert.match(out, /You descend the stairs to depth 3\./);
+  assert.match(out, /\*\*\* VICTORY! You escaped with the Biton Crystal in \d+ turns\. \*\*\*/);
+  assert.equal(res.run!.exitCode, 0);
+});
+
+test("template crypt: typed moves are played before the autopilot", { skip }, async () => {
+  const res = await runJob({ ...cryptProject(), mode: "run", args: ["33"], stdin: "wwwwww\nddddd\n" });
+  const out = res.run!.stdout;
+  assert.match(out, /You can't go north: there's a wall\./);
+  assert.equal(out.match(/You can't go north/g)!.length, 1, "a wall is reported once, not per key");
+  assert.match(out, /Your moves are used up\. Here is where they took you:/);
+  assert.match(out, /The autopilot takes over\./);
+});
+
+test("template crypt: another seed is another dungeon", { skip }, async () => {
+  const a = await runJob({ ...cryptProject(), mode: "run", args: ["1"] });
+  const b = await runJob({ ...cryptProject(), mode: "run", args: ["2"] });
+  const map = (s: string) => s.split("\n").slice(3, 22).join("\n");
+  assert.notEqual(map(a.run!.stdout), map(b.run!.stdout));
+  const again = await runJob({ ...cryptProject(), mode: "run", args: ["1"] });
+  assert.equal(again.run!.stdout, a.run!.stdout, "the same seed plays the same game");
+});
+
+test("template crypt: every module is formatted", { skip }, async () => {
+  const p = cryptProject();
+  for (const [name, code] of [["main.bit", p.code], ...Object.entries(p.files)]) {
+    const res = await runJob({ code, entry: name, files: p.files, mode: "format" });
+    assert.equal(res.formatted, code, `${name} is not biton fmt-clean`);
+  }
+});

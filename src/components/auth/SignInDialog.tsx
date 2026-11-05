@@ -93,7 +93,7 @@ export default function SignInDialog({ providers, reason, error: initialError, o
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <Logo className="w-8 h-8 mb-4" />
+            <Logo className="w-10 h-10 mb-4" />
             <h2 id="signin-title" className="text-[17px] font-semibold tracking-tight text-fg">
               Sign in to Biton
             </h2>

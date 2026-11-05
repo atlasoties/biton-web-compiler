@@ -1,0 +1,168 @@
+// The rules: moving, fighting, picking things up, potions, and what the
+// monsters do on their turn.
+import std.math.{abs, min}
+import crypt.world.{World, DEPTHS, STAIRS, open, monster_at, item_at, name, strength, draw}
+import crypt.dungeon.{build_level}
+
+pub type Command { Up, Down, Left, Right, Drink, Wait }
+
+pub fn describe(c: Command) string {
+    return when c {
+        Up -> "north",
+        Down -> "south",
+        Left -> "west",
+        Right -> "east",
+        Drink -> "drink",
+        Wait -> "wait"
+    }
+}
+
+fn heal(w: *World, amount: int) {
+    w.hp = min(w.max_hp, w.hp + amount)
+}
+
+fn pick_up(w: *World) {
+    i := item_at(w, w.hx, w.hy)
+    if i < 0 { return }
+    it := w.items.at(i)
+    it.taken = true
+    when it.loot {
+        Gold(n) -> {
+            w.gold += n
+            print("  [{w.turn}] You pick up {n} gold.")
+        }
+        Potion -> {
+            w.potions += 1
+            print("  [{w.turn}] You find a healing potion.")
+        }
+        Crystal -> {
+            w.won = true
+            print("  [{w.turn}] You lift the Biton Crystal. The crypt trembles!")
+        }
+    }
+}
+
+fn descend(w: *World) {
+    w.depth += 1
+    // A breather on the stairs.
+    w.max_hp += 2
+    heal(w, 8)
+    build_level(w)
+    print("")
+    print("You descend the stairs to depth {w.depth}.")
+    draw(w)
+}
+
+fn attack(w: *World, i: int) {
+    m := w.monsters.at(i)
+    damage := w.power + w.rng.range(0, 3)
+    m.hp -= damage
+    if m.hp <= 0 {
+        m.alive = false
+        w.kills += 1
+        print("  [{w.turn}] You slay the {name(m.kind)}!")
+        // Every fifth kill makes the hero stronger.
+        if w.kills % 5 == 0 {
+            w.level += 1
+            w.power += 1
+            w.max_hp += 3
+            heal(w, 3)
+            print("  [{w.turn}] You reach level {w.level}: stronger and tougher ({w.max_hp} HP).")
+        }
+    } else {
+        print("  [{w.turn}] You hit the {name(m.kind)} for {damage}.")
+    }
+}
+
+// Carry out one command. Returns false when it could not be done (a wall,
+// no potion), which costs no turn.
+pub fn act(w: *World, c: Command) bool {
+    when c {
+        Drink -> {
+            if w.potions == 0 { return false }
+            w.potions -= 1
+            before := w.hp
+            heal(w, 8 + w.depth * 2)
+            print("  [{w.turn}] You drink a potion (+{w.hp - before} HP).")
+            return true
+        }
+        Wait -> {
+            w.rested = true
+            return true
+        }
+        else -> {}
+    }
+    nx := w.hx
+    ny := w.hy
+    when c {
+        Up -> ny -= 1
+        Down -> ny += 1
+        Left -> nx -= 1
+        Right -> nx += 1
+        else -> {}
+    }
+    if not open(w, nx, ny) { return false }
+    i := monster_at(w, nx, ny)
+    if i >= 0 {
+        attack(w, i)
+        return true
+    }
+    w.hx = nx
+    w.hy = ny
+    pick_up(w)
+    if w.tiles[ny][nx] == STAIRS and w.depth < DEPTHS { descend(w) }
+    return true
+}
+
+fn distance(ax: int, ay: int, bx: int, by: int) int { return abs(ax - bx) + abs(ay - by) }
+
+fn sign(n: int) int {
+    if n > 0 { return 1 }
+    if n < 0 { return -1 }
+    return 0
+}
+
+fn free_for_monster(w: *World, x: int, y: int) bool {
+    return open(w, x, y) and monster_at(w, x, y) < 0 and not (x == w.hx and y == w.hy)
+}
+
+// Monsters that are close notice the hero: next to it they attack, otherwise
+// they step towards it (along the longer gap first).
+pub fn monsters_turn(w: *World) {
+    for i in 0..w.monsters.len() {
+        m := w.monsters.at(i)
+        if not m.alive { continue }
+        d := distance(m.x, m.y, w.hx, w.hy)
+        if d == 1 {
+            hit := strength(m.kind) + w.rng.range(0, 2)
+            if w.rng.chance(0.15) {
+                print("  [{w.turn}] The {name(m.kind)} misses.")
+            } else {
+                w.hp -= hit
+                print("  [{w.turn}] The {name(m.kind)} hits you for {hit}.")
+            }
+            if w.hp <= 0 {
+                w.dead = true
+                print("  [{w.turn}] You were slain by a {name(m.kind)}.")
+                return
+            }
+        } elif d <= 6 {
+            sx := sign(w.hx - m.x)
+            sy := sign(w.hy - m.y)
+            if abs(w.hx - m.x) >= abs(w.hy - m.y) {
+                if sx != 0 and free_for_monster(w, m.x + sx, m.y) { m.x += sx }
+                elif sy != 0 and free_for_monster(w, m.x, m.y + sy) { m.y += sy }
+            } else {
+                if sy != 0 and free_for_monster(w, m.x, m.y + sy) { m.y += sy }
+                elif sx != 0 and free_for_monster(w, m.x + sx, m.y) { m.x += sx }
+            }
+        }
+    }
+}
+
+// The hero recovers a little every 8 turns, or every other turn while resting.
+pub fn end_turn(w: *World) {
+    w.turn += 1
+    if w.turn % 8 == 0 or (w.rested and w.turn % 2 == 0) { heal(w, 1) }
+    w.rested = false
+}

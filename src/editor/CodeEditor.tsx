@@ -1,5 +1,5 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { Compartment, EditorSelection, EditorState, Prec } from "@codemirror/state";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
+import { Compartment, EditorSelection, EditorState, Prec, type Extension } from "@codemirror/state";
 import {
   EditorView,
   crosshairCursor,
@@ -18,8 +18,8 @@ import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } 
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { lintGutter, lintKeymap, setDiagnostics, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
 
-import type { Diagnostic } from "../../shared/api.ts";
-import { inBuffer } from "../lib/state";
+import type { CompleteRequest, Diagnostic } from "../../shared/api.ts";
+import { inlineAI, type AIStatus } from "./ai";
 import { biton } from "./biton";
 
 export interface EditorHandle {
@@ -30,6 +30,10 @@ export interface EditorHandle {
   undo(): void;
   redo(): void;
   focus(): void;
+  /** Files were renamed or moved: keep their history, cursor and scroll under the new paths. */
+  rename(moved: ReadonlyMap<string, string>): void;
+  /** Files were deleted: drop what the editor remembers about them. */
+  forget(paths: Iterable<string>): void;
 }
 
 export interface CursorInfo {
@@ -39,16 +43,24 @@ export interface CursorInfo {
 }
 
 interface CodeEditorProps {
-  initialValue: string;
-  onChange: (text: string) => void;
+  /** Path of the file shown. Each file keeps its own undo history, selection and scroll. */
+  path: string;
+  /** That file's text. A change from outside the editor (upload, restore) is applied as an edit. */
+  value: string;
+  onChange: (path: string, text: string) => void;
   onCursor?: (c: CursorInfo) => void;
   onHistory?: (h: { canUndo: boolean; canRedo: boolean }) => void;
-  /** Diagnostics for the current text, or null while they are out of date. */
+  /** Diagnostics for the project (only those for `path` are shown), or null while they are out of date. */
   diagnostics: Diagnostic[] | null;
   onRun: () => void;
   onFormat: () => void;
   onSave: () => void;
   fontSize: number;
+  /** Show inline AI suggestions. */
+  aiEnabled: boolean;
+  /** Other files to give the AI as context (read at request time). */
+  aiRelated?: () => CompleteRequest["related"];
+  onAIStatus?: (s: AIStatus) => void;
 }
 
 const editorTheme = EditorView.theme({
@@ -119,11 +131,11 @@ const editorTheme = EditorView.theme({
   ".cm-lint-marker": { width: "8px", height: "8px", margin: "7px 2px 0" },
 });
 
-function toCm(state: EditorState, diagnostics: Diagnostic[]): CmDiagnostic[] {
+function toCm(state: EditorState, diagnostics: Diagnostic[], path: string): CmDiagnostic[] {
   const out: CmDiagnostic[] = [];
   const doc = state.doc;
   for (const d of diagnostics) {
-    if (!inBuffer(d) || d.line > doc.lines) continue;
+    if (d.file !== path || d.line <= 0 || d.line > doc.lines) continue;
     const line = doc.line(d.line);
     const from = Math.min(line.to, line.from + Math.max(0, d.col - 1));
     const to = Math.max(from, Math.min(line.to, line.from + Math.max(0, d.endCol - 1)));
@@ -152,6 +164,14 @@ function minimalChange(a: string, b: string) {
   return { from: start, to: endA, insert: b.slice(start, endB) };
 }
 
+const fontTheme = (px: number) => EditorView.theme({ "&": { fontSize: `${px}px` } });
+
+interface Remembered {
+  state: EditorState;
+  scrollTop: number;
+  scrollLeft: number;
+}
+
 const CodeEditor = forwardRef<EditorHandle, CodeEditorProps>(function CodeEditor(props, ref) {
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
@@ -159,57 +179,89 @@ const CodeEditor = forwardRef<EditorHandle, CodeEditorProps>(function CodeEditor
   const cb = useRef(props);
   cb.current = props;
   const fontSize = useRef(new Compartment());
+  const ai = useRef(new Compartment());
+  /** Path whose state the view shows. */
+  const shown = useRef(props.path);
+  /** States of the files not on screen. */
+  const states = useRef(new Map<string, Remembered>());
+  /** The shown file was deleted: don't remember it when switching away. */
+  const dropShown = useRef(false);
+
+  // One AI extension for the editor's lifetime; it reads the current file through `cb`.
+  const aiExtension = useMemo(
+    () =>
+      inlineAI({
+        fileName: () => shown.current,
+        related: () => cb.current.aiRelated?.(),
+        onStatus: (s) => cb.current.onAIStatus?.(s),
+      }),
+    [],
+  );
+
+  const extensions = useMemo((): Extension[] => {
+    const run = () => (cb.current.onRun(), true);
+    return [
+      Prec.highest(
+        keymap.of([
+          { key: "Mod-Enter", run, preventDefault: true },
+          { key: "Shift-Enter", run: () => false },
+          { key: "Shift-Alt-f", run: () => (cb.current.onFormat(), true), preventDefault: true },
+          { key: "Mod-s", run: () => (cb.current.onSave(), true), preventDefault: true },
+        ]),
+      ),
+      lineNumbers(),
+      highlightActiveLineGutter(),
+      foldGutter({ openText: "⌄", closedText: "›" }),
+      lintGutter(),
+      highlightSpecialChars(),
+      history(),
+      drawSelection(),
+      dropCursor(),
+      EditorState.allowMultipleSelections.of(true),
+      indentOnInput(),
+      bracketMatching(),
+      closeBrackets(),
+      autocompletion({ icons: true, activateOnTypingDelay: 80 }),
+      ai.current.of([]),
+      rectangularSelection(),
+      crosshairCursor(),
+      highlightActiveLine(),
+      highlightSelectionMatches(),
+      keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
+      biton(),
+      editorTheme,
+      fontSize.current.of([]),
+      EditorView.contentAttributes.of({ "aria-label": "Biton source code", spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
+      EditorView.updateListener.of((u) => {
+        if (u.docChanged) cb.current.onChange(shown.current, u.state.doc.toString());
+        if (u.docChanged || u.transactions.length) report(u.state);
+        else if (u.selectionSet) report(u.state);
+      }),
+    ];
+  }, []);
+
+  /** Tell the app about the cursor and the undo stack. */
+  function report(state: EditorState) {
+    cb.current.onHistory?.({ canUndo: undoDepth(state) > 0, canRedo: redoDepth(state) > 0 });
+    const sel = state.selection.main;
+    const line = state.doc.lineAt(sel.head);
+    cb.current.onCursor?.({ line: line.number, col: sel.head - line.from + 1, selected: Math.abs(sel.to - sel.from) });
+  }
+
+  /** Bring a state's per-view settings (font, AI, diagnostics) up to date. */
+  function refresh(v: EditorView) {
+    const p = cb.current;
+    v.dispatch({
+      effects: [fontSize.current.reconfigure(fontTheme(p.fontSize)), ai.current.reconfigure(p.aiEnabled ? aiExtension : [])],
+    });
+    v.dispatch(setDiagnostics(v.state, p.diagnostics ? toCm(v.state, p.diagnostics, shown.current) : []));
+  }
 
   useEffect(() => {
-    const run = () => (cb.current.onRun(), true);
-    const state = EditorState.create({
-      doc: props.initialValue,
-      extensions: [
-        Prec.highest(
-          keymap.of([
-            { key: "Mod-Enter", run, preventDefault: true },
-            { key: "Shift-Enter", run: () => false },
-            { key: "Shift-Alt-f", run: () => (cb.current.onFormat(), true), preventDefault: true },
-            { key: "Mod-s", run: () => (cb.current.onSave(), true), preventDefault: true },
-          ]),
-        ),
-        lineNumbers(),
-        highlightActiveLineGutter(),
-        foldGutter({ openText: "⌄", closedText: "›" }),
-        lintGutter(),
-        highlightSpecialChars(),
-        history(),
-        drawSelection(),
-        dropCursor(),
-        EditorState.allowMultipleSelections.of(true),
-        indentOnInput(),
-        bracketMatching(),
-        closeBrackets(),
-        autocompletion({ icons: true, activateOnTypingDelay: 80 }),
-        rectangularSelection(),
-        crosshairCursor(),
-        highlightActiveLine(),
-        highlightSelectionMatches(),
-        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
-        biton(),
-        editorTheme,
-        fontSize.current.of(EditorView.theme({ "&": { fontSize: `${props.fontSize}px` } })),
-        EditorView.contentAttributes.of({ "aria-label": "Biton source code", spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
-        EditorView.updateListener.of((u) => {
-          if (u.docChanged) cb.current.onChange(u.state.doc.toString());
-          if (u.docChanged || u.transactions.length) {
-            cb.current.onHistory?.({ canUndo: undoDepth(u.state) > 0, canRedo: redoDepth(u.state) > 0 });
-          }
-          if (u.selectionSet || u.docChanged) {
-            const sel = u.state.selection.main;
-            const line = u.state.doc.lineAt(sel.head);
-            cb.current.onCursor?.({ line: line.number, col: sel.head - line.from + 1, selected: Math.abs(sel.to - sel.from) });
-          }
-        }),
-      ],
-    });
-    const v = new EditorView({ state, parent: host.current! });
+    const v = new EditorView({ state: EditorState.create({ doc: props.value, extensions }), parent: host.current! });
     view.current = v;
+    refresh(v);
+    report(v.state);
     return () => {
       v.destroy();
       view.current = null;
@@ -218,15 +270,56 @@ const CodeEditor = forwardRef<EditorHandle, CodeEditorProps>(function CodeEditor
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Switch files: remember the outgoing one, restore (or create) the incoming one.
+  useEffect(() => {
+    const v = view.current;
+    if (!v || shown.current === props.path) return;
+    if (!dropShown.current) {
+      states.current.set(shown.current, { state: v.state, scrollTop: v.scrollDOM.scrollTop, scrollLeft: v.scrollDOM.scrollLeft });
+    }
+    dropShown.current = false;
+    const saved = states.current.get(props.path);
+    states.current.delete(props.path);
+    shown.current = props.path;
+    let state = saved?.state ?? EditorState.create({ doc: props.value, extensions });
+    // Changed while away (an upload, a restore): apply it as one undoable edit.
+    if (saved && state.doc.toString() !== props.value) {
+      state = state.update({ changes: minimalChange(state.doc.toString(), props.value), userEvent: "input.replace" }).state;
+    }
+    v.setState(state);
+    refresh(v);
+    report(v.state);
+    if (saved) {
+      requestAnimationFrame(() => {
+        v.scrollDOM.scrollTop = saved.scrollTop;
+        v.scrollDOM.scrollLeft = saved.scrollLeft;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.path]);
+
+  // A change to the shown file from outside the editor.
+  useEffect(() => {
+    const v = view.current;
+    if (!v || shown.current !== props.path) return;
+    const current = v.state.doc;
+    if (current.length === props.value.length && current.toString() === props.value) return;
+    v.dispatch({ changes: minimalChange(current.toString(), props.value), userEvent: "input.replace" });
+  }, [props.value, props.path]);
+
   useEffect(() => {
     const v = view.current;
     if (!v) return;
-    v.dispatch(setDiagnostics(v.state, props.diagnostics ? toCm(v.state, props.diagnostics) : []));
+    v.dispatch(setDiagnostics(v.state, props.diagnostics ? toCm(v.state, props.diagnostics, shown.current) : []));
   }, [props.diagnostics]);
 
   useEffect(() => {
-    view.current?.dispatch({ effects: fontSize.current.reconfigure(EditorView.theme({ "&": { fontSize: `${props.fontSize}px` } })) });
+    view.current?.dispatch({ effects: fontSize.current.reconfigure(fontTheme(props.fontSize)) });
   }, [props.fontSize]);
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: ai.current.reconfigure(props.aiEnabled ? aiExtension : []) });
+  }, [props.aiEnabled, aiExtension]);
 
   useImperativeHandle(ref, () => ({
     replaceAll(text) {
@@ -247,6 +340,19 @@ const CodeEditor = forwardRef<EditorHandle, CodeEditorProps>(function CodeEditor
     undo: () => view.current && undo(view.current),
     redo: () => view.current && redo(view.current),
     focus: () => view.current?.focus(),
+    rename(moved) {
+      const next = new Map<string, Remembered>();
+      for (const [path, r] of states.current) next.set(moved.get(path) ?? path, r);
+      states.current = next;
+      const renamed = moved.get(shown.current);
+      if (renamed) shown.current = renamed;
+    },
+    forget(paths) {
+      for (const p of paths) {
+        states.current.delete(p);
+        if (p === shown.current) dropShown.current = true;
+      }
+    },
   }));
 
   return <div ref={host} className="h-full min-h-0 overflow-hidden" />;

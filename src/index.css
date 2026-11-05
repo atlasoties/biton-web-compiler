@@ -36,6 +36,7 @@
   --info-soft: rgb(37 99 235 / 0.08);
   --shadow: 0 1px 2px rgb(15 23 42 / 0.06), 0 8px 24px rgb(15 23 42 / 0.08);
   --overlay: rgb(15 23 42 / 0.35);
+  --logo-edge: transparent;
 
   --editor-bg: #ffffff;
   --editor-gutter: #ffffff;
@@ -94,6 +95,7 @@
   --info-soft: rgb(96 165 250 / 0.1);
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.45);
   --overlay: rgb(0 0 0 / 0.55);
+  --logo-edge: rgb(255 255 255 / 0.16);
 
   --editor-bg: #0e1116;
   --editor-gutter: #0e1116;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Braces, FileCode2, Keyboard, Layers, Redo2, SquareTerminal, Undo2 } from "lucide-react";
+import { AlertCircle, Braces, FilePlus2, Keyboard, Layers, Redo2, SquareTerminal, Undo2 } from "lucide-react";
 
 import TopBar from "./components/layout/TopBar";
 import Sidebar, { ActivityRail, type SidePanel } from "./components/layout/Sidebar";
@@ -9,10 +9,14 @@ import Console from "./components/output/Console";
 import InputPanel from "./components/output/InputPanel";
 import Problems from "./components/output/Problems";
 import Pipeline from "./components/output/Pipeline";
-import SignInDialog from "./components/auth/SignInDialog";
 import AccountMenu from "./components/auth/AccountMenu";
-import { Badge, IconButton, Tabs, cx } from "./components/ui";
+import { ConfirmDialog } from "./components/Dialog";
+import EditorTabs from "./components/files/EditorTabs";
+import QuickOpen from "./components/files/QuickOpen";
+import type { FileProblems } from "./components/files/FileExplorer";
+import { Badge, Button, IconButton, Kbd, Tabs, cx } from "./components/ui";
 import CodeEditor, { type CursorInfo, type EditorHandle } from "./editor/CodeEditor";
+import type { AIStatus } from "./editor/ai";
 
 import { DEFAULT_EXAMPLE, EXAMPLE_BY_KEY, EXAMPLE_LIST } from "./examples";
 import {
@@ -20,21 +24,27 @@ import {
   SignInRequiredError,
   compile,
   compileWithRetry,
-  getSession,
   health,
   isAbort,
-  redeemSignInLink,
-  signOut as apiSignOut,
 } from "./lib/api";
 import { formatArgs, parseArgs } from "./lib/args";
-import { MAX_SHARE_URL, decodeShare, encodeShare } from "./lib/share";
-import { load as loadSaved, save } from "./lib/storage";
+import { readPicked, type Picked } from "./lib/importFiles";
+import { basename, dirname, freshPath, importsOf, isFile, joinPath, kindOf, listFiles, pathProblem, uniquePath, type Files } from "./lib/project";
+import { MAX_SHARE_URL, encodeShare } from "./lib/share";
+import { load as loadPrefs, save as savePrefs, type Saved } from "./lib/storage";
+import { ProjectStore, isProjectKey, type ProjectDoc } from "./lib/projects";
+import type { Auth } from "./lib/useAuth";
 import { useTheme, type ThemePref } from "./lib/theme";
-import { SOURCE_FILE, inBuffer, type Busy, type EmitState, type OutputTab, type TerminalRow, type TerminalRowType } from "./lib/state";
+import { SOURCE_FILE, type Busy, type EmitState, type OutputTab, type TerminalRow, type TerminalRowType } from "./lib/state";
+import { projectFrom, useProject } from "./lib/useProject";
+import { zip } from "./lib/zip";
 import {
+  AI_MAX_RELATED_CHARS,
+  AI_MAX_RELATED_FILES,
   EMIT_KINDS,
   OPT_LEVELS,
   type AuthStatus,
+  type CompileRequest,
   type CompileResponse,
   type Diagnostic,
   type EmitKind,
@@ -45,9 +55,12 @@ import {
 const LIVE_CHECK_DELAY_MS = 700;
 const SAVE_DELAY_MS = 400;
 const MAX_TERMINAL_ROWS = 1000;
-const PROGRAM = SOURCE_FILE.replace(/\.bit$/, "");
 const DEFAULT_SPLIT = 0.42;
 const FONT_SIZES = { min: 11, max: 22, default: 14 };
+const TOAST_MS = 2600;
+const UNDO_TOAST_MS = 8000;
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+const MOD = isMac ? "⌘" : "Ctrl";
 
 /** The side panel floats over the editor below this width. */
 const SIDEBAR_DOCKS_AT = 1100;
@@ -58,26 +71,8 @@ const defaultExample = EXAMPLE_BY_KEY[DEFAULT_EXAMPLE];
 const SIDE_PANELS: SidePanel[] = ["files", "language", "stdlib"];
 const OUTPUT_TABS: OutputTab[] = ["console", "input", "problems", "pipeline"];
 
-/** localStorage key other tabs watch to learn of a sign-in or sign-out. */
-const AUTH_CHANGED = "biton-web-compiler:auth-changed";
-function announceAuthChange() {
-  try {
-    localStorage.setItem(AUTH_CHANGED, String(Date.now()));
-  } catch {
-    /* other tabs will notice on focus instead */
-  }
-}
-
-/** What `#auth-error=<code>` (from a failed Google sign-in) means. */
-const AUTH_ERRORS: Record<string, string> = {
-  cancelled: "Google sign-in was cancelled.",
-  expired: "The sign-in took too long or was started in another tab. Try again.",
-  unverified: "That Google account's email address is not verified.",
-  google: "Google sign-in failed. Try again.",
-};
-
 /** A shell-like rendering of the run, for the console. */
-function runCommandLine(opt: OptLevel, args: string[], stdin: string, mainFile: string = SOURCE_FILE): string {
+function runCommandLine(opt: OptLevel, args: string[], stdin: string, mainFile: string): string {
   const prog = mainFile.replace(/\.bit$/, "");
   const argText = args.length ? ` ${formatArgs(args)}` : "";
   const input = stdin ? " < stdin" : "";
@@ -85,17 +80,21 @@ function runCommandLine(opt: OptLevel, args: string[], stdin: string, mainFile: 
 }
 
 /**
- * Files to send alongside the active buffer. Folder markers are only a UI
- * detail (their keys end in "/"), so they never reach the compiler.
+ * A compile request for `target` with the rest of the project beside it.
+ * Folder markers are a UI detail and never reach the server.
  */
-function extraFiles(files: Record<string, string>, activeFile: string): Record<string, string> | undefined {
-  const out: Record<string, string> = {};
+function projectRequest(files: Files, target: string): Pick<CompileRequest, "code" | "entry" | "files"> {
+  const others: Record<string, string> = {};
   for (const [name, content] of Object.entries(files)) {
-    if (name === activeFile || name.endsWith("/")) continue;
-    out[name] = content;
+    if (name !== target && !name.endsWith("/")) others[name] = content;
   }
-  return Object.keys(out).length ? out : undefined;
+  return { code: files[target] ?? "", entry: target, files: Object.keys(others).length ? others : undefined };
 }
+
+/** Diagnostics without a file are about the file that was compiled. */
+const located = (ds: Diagnostic[], target: string) => ds.map((d) => (d.file ? d : { ...d, file: target }));
+
+const isSource = (path: string | null): path is string => !!path && path.endsWith(".bit");
 
 function useWindowWidth(): number {
   const [w, setW] = useState(() => window.innerWidth);
@@ -107,139 +106,69 @@ function useWindowWidth(): number {
   return w;
 }
 
-const clampFont = (n: number) => Math.min(FONT_SIZES.max, Math.max(FONT_SIZES.min, Math.round(n)));
+const clampFont = (n: number) => Math.min(FONT_SIZES.max, Math.round(Math.max(FONT_SIZES.min, n)));
 
-export default function App() {
-  const saved = useMemo(loadSaved, []);
+function downloadBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+interface Toast {
+  text: string;
+  action?: { label: string; run: () => void };
+  tone?: "error";
+}
+
+/** A pending question for the user (import conflicts, opening a shared project). */
+type Ask = { kind: "import"; entries: Array<{ path: string; content: string }>; conflicts: string[]; skipped: number };
+
+interface WorkspaceProps {
+  projectId: string;
+  projectName: string;
+  /** The project as stored when it was opened. */
+  doc: ProjectDoc;
+  store: ProjectStore;
+  auth: Auth;
+  /** Back to the project list. */
+  onHome: () => void;
+  onRename: (name: string) => void;
+}
+
+export default function Workspace({ projectId, projectName, doc, store, auth: authApi, onHome, onRename }: WorkspaceProps) {
+  const saved = useMemo(loadPrefs, []);
+  const { auth, setUser, signOut } = authApi;
+  const setSignIn = (p: { reason?: string }) => authApi.openSignIn(p.reason);
   const { pref: themePref, setPref: setThemePref } = useTheme();
   const width = useWindowWidth();
   const sidebarFloats = width < SIDEBAR_DOCKS_AT;
   const stacked = width < STACK_BELOW;
 
-  // ── the buffer ─────────────────────────────────────────────────────────
-  // The editor owns the text; `code` mirrors it for checks, saving and runs.
-  const initialFiles = useMemo(() => {
-    if (saved.files && Object.keys(saved.files).length > 0) {
-      return saved.files;
-    }
-    return { [SOURCE_FILE]: saved.code ?? defaultExample.code };
-  }, [saved]);
-  const [files, setFiles] = useState<Record<string, string>>(initialFiles);
-  const [activeFile, setActiveFile] = useState<string>(saved.activeFile && initialFiles[saved.activeFile] !== undefined ? saved.activeFile : SOURCE_FILE);
-  const code = files[activeFile] ?? "";
+  // ── the project ────────────────────────────────────────────────────────
+  const editor = useRef<EditorHandle | null>(null);
+  const { project, latest, entry, actions } = useProject(() => projectFrom(doc, defaultExample.code), editor);
+  const { files, tabs, active } = project;
+  const code = active !== null ? (files[active] ?? "") : "";
   const codeRef = useRef(code);
   codeRef.current = code;
-  const editor = useRef<EditorHandle | null>(null);
   const [undoState, setUndoState] = useState({ canUndo: false, canRedo: false });
   const [cursor, setCursor] = useState<CursorInfo>({ line: 1, col: 1, selected: 0 });
-  /** Replace the whole buffer as one undoable edit. */
-  const replaceCode = useCallback((text: string) => {
-    setFiles((f) => ({ ...f, [activeFile]: text }));
-    if (editor.current) editor.current.replaceAll(text);
-  }, [activeFile]);
-  const setCode = useCallback((text: string) => {
-    setFiles((f) => ({ ...f, [activeFile]: text }));
-  }, [activeFile]);
+  /** Where to put the cursor once a file opened from a diagnostic is shown. */
+  const pendingJump = useRef<{ path: string; line: number; col: number } | null>(null);
+  const [revealToken, setRevealToken] = useState(0);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [ask, setAsk] = useState<Ask | null>(null);
 
-  const createFile = useCallback((name: string) => {
-    const fileName = /\.bit$/i.test(name) ? name : name + ".bit";
-    setFiles((f) => {
-      const next = { ...f };
-      // Make sure every parent folder has a marker so it shows in the sidebar.
-      const parts = fileName.split("/");
-      for (let i = 1; i < parts.length; i += 1) {
-        const folder = `${parts.slice(0, i).join("/")}/`;
-        if (next[folder] === undefined) next[folder] = "";
-      }
-      if (next[fileName] === undefined) next[fileName] = "";
-      return next;
-    });
-    setActiveFile(fileName);
-  }, []);
-
-  const createFolder = useCallback((name: string) => {
-    const folderName = name.endsWith("/") ? name : name + "/";
-    setFiles((f) => {
-      const next = { ...f };
-      // Create any missing parent folders too (src/lib/ adds src/ as well).
-      const parts = folderName.replace(/\/$/, "").split("/");
-      for (let i = 1; i <= parts.length; i += 1) {
-        const folder = `${parts.slice(0, i).join("/")}/`;
-        if (next[folder] === undefined) next[folder] = "";
-      }
-      return next;
-    });
-  }, []);
-
-  const deleteFile = useCallback((name: string) => {
-    const prefix = name.endsWith("/") ? name : name + "/";
-    setFiles((f) => {
-      const next = { ...f };
-      delete next[name];
-      // Also delete files in the folder.
-      for (const key of Object.keys(next)) {
-        if (key.startsWith(prefix)) {
-          delete next[key];
-        }
-      }
-      return next;
-    });
-    if (activeFile === name || activeFile.startsWith(prefix)) {
-      const remaining = Object.keys(files).filter((k) => k !== name && !k.startsWith(prefix) && !k.endsWith("/"));
-      setActiveFile(remaining[0] || SOURCE_FILE);
-    }
-  }, [files, activeFile]);
-
-  const renameFile = useCallback((oldName: string, newName: string) => {
-    const oldPrefix = oldName.endsWith("/") ? oldName : oldName + "/";
-    const newPrefix = newName.endsWith("/") ? newName : newName + "/";
-    setFiles((f) => {
-      const next = { ...f };
-      if (next[oldName] !== undefined) {
-        next[newName] = next[oldName];
-        delete next[oldName];
-      }
-      // Move everything inside a renamed folder.
-      for (const key of Object.keys(next)) {
-        if (key.startsWith(oldPrefix)) {
-          const newKey = newPrefix + key.slice(oldPrefix.length);
-          next[newKey] = next[key];
-          delete next[key];
-        }
-      }
-      return next;
-    });
-    if (activeFile === oldName) {
-      setActiveFile(newName);
-    } else if (activeFile.startsWith(oldPrefix)) {
-      setActiveFile(newPrefix + activeFile.slice(oldPrefix.length));
-    }
-  }, [activeFile]);
-
-  const copyFile = useCallback((name: string, newName: string) => {
-    const prefix = name.endsWith("/") ? name : name + "/";
-    const copyPrefix = newName.endsWith("/") ? newName : newName + "/";
-    setFiles((f) => {
-      const next = { ...f };
-      if (next[name] !== undefined) {
-        next[newName] = next[name];
-      }
-      // Copy folder contents too.
-      for (const key of Object.keys(f)) {
-        if (key.startsWith(prefix)) {
-          const newKey = copyPrefix + key.slice(prefix.length);
-          next[newKey] = f[key];
-        }
-      }
-      return next;
-    });
-  }, []);
-
-  const [stdin, setStdin] = useState(saved.stdin ?? defaultExample.stdin ?? "");
-  const [argsLine, setArgsLine] = useState(saved.args ?? formatArgs(defaultExample.args ?? []));
+  const [stdin, setStdin] = useState(doc.stdin ?? "");
+  const [argsLine, setArgsLine] = useState(doc.args ?? "");
   const [opt, setOpt] = useState<OptLevel>(OPT_LEVELS.includes(saved.opt as OptLevel) ? (saved.opt as OptLevel) : "O2");
   const [fontSize, setFontSizeState] = useState(clampFont(saved.fontSize ?? FONT_SIZES.default));
   const setFontSize = (n: number) => setFontSizeState(clampFont(n));
+  const [aiEnabled, setAiEnabled] = useState(saved.ai !== false);
+  const [aiStatus, setAiStatus] = useState<AIStatus>({ state: "idle" });
 
   // ── layout ─────────────────────────────────────────────────────────────
   const savedPanel = SIDE_PANELS.includes(saved.sidePanel as SidePanel) ? (saved.sidePanel as SidePanel) : saved.sidePanel === null ? null : "files";
@@ -252,9 +181,8 @@ export default function App() {
   if (!sidebarFloats) dockedPanel.current = sidePanel;
 
   // ── compiler state ─────────────────────────────────────────────────────
-  const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
-  /** Source that `diagnostics` describe; when it differs from `code` they are stale. */
-  const [diagnosticsSource, setDiagnosticsSource] = useState<string | null>(null);
+  /** Diagnostics, with the project snapshot and file they were produced for (to tell when they are stale). */
+  const [diag, setDiag] = useState<{ list: Diagnostic[]; files: Files | null; target: string | null }>({ list: [], files: null, target: null });
   const [checking, setChecking] = useState(false);
   /** Bumped to re-run the live check after a rate-limit back-off. */
   const [recheck, setRecheck] = useState(0);
@@ -285,123 +213,103 @@ export default function App() {
     setOutputTab((t) => (t === "input" || t === "problems" || t === "pipeline" ? "console" : t));
   }, []);
 
+  // ── toasts ─────────────────────────────────────────────────────────────
+  const [toast, setToastState] = useState<Toast | null>(null);
+  const notify = useCallback((t: Toast | string) => setToastState(typeof t === "string" ? { text: t } : t), []);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToastState(null), toast.action ? UNDO_TOAST_MS : TOAST_MS);
+    return () => clearTimeout(t);
+  }, [toast]);
+
   // ── persistence ────────────────────────────────────────────────────────
-  const workspace = () => ({
-    code: codeRef.current,
+  // Preferences (layout, font, -O level, AI) are shared by every project; the
+  // project itself (files, tabs, entry, stdin, arguments) has its own record.
+  /** Another tab saved this project; stop saving over it until the user decides. */
+  const [conflict, setConflict] = useState(false);
+  const storageWarned = useRef(false);
+  /** The files as last saved, to tell an edit from a tab switch. */
+  const savedFiles = useRef(project.files);
+  const prefs = (): Saved => ({ opt, sidePanel: dockedPanel.current, showPanel, outputTab, split, fontSize, ai: aiEnabled });
+  const projectDoc = (): ProjectDoc => ({
+    files: latest.current.files,
+    tabs: latest.current.tabs,
+    activeFile: latest.current.active,
+    entry: latest.current.entry,
+    recent: latest.current.recent,
     stdin,
     args: argsLine,
-    opt,
-    sidePanel: dockedPanel.current,
-    showPanel,
-    outputTab,
-    split,
-    fontSize,
-    files,
-    activeFile,
   });
+  const snapshot = useRef({ prefs, projectDoc });
+  snapshot.current = { prefs, projectDoc };
+  const persist = useCallback(() => {
+    savePrefs(snapshot.current.prefs());
+    const d = snapshot.current.projectDoc();
+    const ok = store.save(projectId, d, d.files !== savedFiles.current);
+    if (ok) {
+      savedFiles.current = d.files;
+      storageWarned.current = false;
+      return true;
+    }
+    if (!storageWarned.current) {
+      storageWarned.current = true;
+      notify({
+        text: "Browser storage is full: changes are not being saved. Download the project, or delete projects you no longer need.",
+        tone: "error",
+        action: { label: "Download", run: () => void downloadRef.current("") },
+      });
+    }
+    return false;
+  }, [notify, store, projectId]);
   useEffect(() => {
-    const t = setTimeout(() => save(workspace()), SAVE_DELAY_MS);
+    if (conflict) return;
+    const t = setTimeout(persist, SAVE_DELAY_MS);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files, activeFile, stdin, argsLine, opt, sidePanel, showPanel, outputTab, split, fontSize]);
+  }, [project, stdin, argsLine, opt, sidePanel, showPanel, outputTab, split, fontSize, aiEnabled, conflict, persist]);
 
-  // ── sign-in ────────────────────────────────────────────────────────────
-  const [auth, setAuth] = useState<AuthStatus | null>(null);
-  const [signIn, setSignIn] = useState<{ reason?: string; error?: string } | null>(null);
-  const setUser = useCallback((user: AuthStatus["user"]) => setAuth((a) => (a ? { ...a, user } : a)), []);
-
-  const refreshSession = useCallback(async () => {
-    try {
-      const s = await getSession();
-      setAuth(s);
-      if (s.user) setSignIn(null);
-      return s;
-    } catch {
-      return null; // the health check reports an unreachable server
-    }
-  }, []);
-
-  // Signing in or out in one tab (say, from the emailed link) updates the
-  // others: they hear it through localStorage, or check again on focus.
   useEffect(() => {
-    refreshSession();
-    const onStorage = (e: StorageEvent) => e.key === AUTH_CHANGED && refreshSession();
-    const onVisible = () => document.visibilityState === "visible" && refreshSession();
+    const onStorage = (e: StorageEvent) => isProjectKey(e.key, projectId) && e.newValue !== null && setConflict(true);
     window.addEventListener("storage", onStorage);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.removeEventListener("storage", onStorage);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [refreshSession]);
-
-  const signOut = useCallback(async () => {
-    try {
-      await apiSignOut();
-      setUser(null);
-      announceAuthChange();
-      addRow("sys", "Signed out.");
-    } catch (e) {
-      addRow("err", `Sign-out failed: ${(e as Error).message}`);
-    }
-  }, [setUser, addRow]);
-
-  // ── the URL fragment: a share link, a magic sign-in link, or a sign-in result ──
-  const openedHash = useRef<string | null>(null);
-  const openHash = useCallback(
-    async (hash: string) => {
-      if (!hash || openedHash.current === hash) return;
-      openedHash.current = hash;
-      const h = hash.replace(/^#/, "");
-      const clearHash = () => window.history.replaceState(null, "", window.location.pathname + window.location.search);
-      if (h.startsWith("login=")) {
-        clearHash();
-        try {
-          const user = await redeemSignInLink(h.slice("login=".length));
-          setUser(user);
-          setSignIn(null);
-          refreshSession();
-          announceAuthChange();
-          addRow("sys", `Signed in as ${user.email}.`);
-        } catch (e) {
-          setSignIn({ error: (e as Error).message.replace(/ \(HTTP \d+\)$/, "") });
-        }
-        return;
-      }
-      if (h === "signed-in") {
-        clearHash();
-        const s = await refreshSession();
-        if (s?.user) {
-          announceAuthChange();
-          addRow("sys", `Signed in as ${s.user.email}.`);
-        }
-        return;
-      }
-      if (h.startsWith("auth-error=")) {
-        clearHash();
-        setSignIn({ error: AUTH_ERRORS[h.slice("auth-error=".length)] ?? AUTH_ERRORS.google });
-        return;
-      }
-      const shared = await decodeShare(hash);
-      if (!shared) {
-        if (h.startsWith("s=")) addRow("err", "This share link is damaged and could not be opened.");
-        return;
-      }
-      replaceCode(shared.code);
-      setStdin(shared.stdin ?? "");
-      setArgsLine(formatArgs(shared.args ?? []));
-      addRow("sys", "Opened a shared program. Undo brings your previous code back.");
-      clearHash();
-    },
-    [replaceCode, addRow, setUser, refreshSession],
-  );
-
+    return () => window.removeEventListener("storage", onStorage);
+  }, [projectId]);
+  // Save what is pending when the page goes away or the project is closed.
+  const conflictRef = useRef(conflict);
+  conflictRef.current = conflict;
   useEffect(() => {
-    openHash(window.location.hash);
-    const onHash = () => openHash(window.location.hash);
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, [openHash]);
+    const flush = () => !conflictRef.current && persist();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [persist]);
+
+  const resolveConflict = (useTheirs: boolean) => {
+    const theirs = useTheirs ? store.load(projectId) : null;
+    if (theirs) {
+      actions.replace(projectFrom(theirs, ""));
+      setStdin(theirs.stdin ?? "");
+      setArgsLine(theirs.args ?? "");
+      savedFiles.current = theirs.files;
+    }
+    setConflict(false);
+    if (!useTheirs) persist();
+  };
+
+  // ── editing the open file ──────────────────────────────────────────────
+  /** Replace the open file's text as one undoable edit (creating main.bit if nothing is open). */
+  const replaceCode = useCallback(
+    (text: string) => {
+      const path = latest.current.active;
+      if (path === null) {
+        actions.create(freshPath(latest.current.files, "", SOURCE_FILE), "file", text);
+        return;
+      }
+      if (editor.current) editor.current.replaceAll(text);
+      else actions.write(path, text);
+    },
+    [actions, latest],
+  );
 
   // ── server health ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -419,19 +327,21 @@ export default function App() {
     return () => ac.abort();
   }, [addRow]);
 
-  // ── live type-check while typing ──────────────────────────────────────
+  // ── live type-check of the open file while typing ──────────────────────
+  const diagnosticsStale = diag.files !== files || diag.target !== active;
   useEffect(() => {
-    if (diagnosticsSource === code) return;
+    if (!diagnosticsStale || !isSource(active)) return;
+    const target = active;
+    const snapshot = files;
     const timer = setTimeout(async () => {
       checkAbort.current?.abort();
       const ac = new AbortController();
       checkAbort.current = ac;
       setChecking(true);
       try {
-        const res = await compile({ code, mode: "check", files: extraFiles(files, activeFile) }, ac.signal);
-        if (codeRef.current !== code) return; // edited since; a newer check is coming
-        setDiagnostics(res.diagnostics);
-        setDiagnosticsSource(code);
+        const res = await compile({ ...projectRequest(snapshot, target), mode: "check" }, ac.signal);
+        if (latest.current.files !== snapshot || latest.current.active !== target) return; // a newer check is coming
+        setDiag({ list: located(res.diagnostics, target), files: snapshot, target });
         setServerError(null);
       } catch (e) {
         if (e instanceof RateLimitError) {
@@ -446,12 +356,12 @@ export default function App() {
     }, LIVE_CHECK_DELAY_MS);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, recheck]);
+  }, [files, active, recheck]);
 
   const showDiagnostics = useCallback(
-    (res: CompileResponse) => {
-      for (const d of res.diagnostics) addRow(d.severity === "warning" ? "warn" : "err", d.rendered);
-      if (res.compilerOutput) addRow("err", res.compilerOutput);
+    (ds: Diagnostic[], compilerOutput: string) => {
+      for (const d of ds) addRow(d.severity === "warning" ? "warn" : "err", d.rendered);
+      if (compilerOutput) addRow("err", compilerOutput);
     },
     [addRow],
   );
@@ -462,27 +372,31 @@ export default function App() {
       setSignIn({ reason: "Sign in to run programs." });
       return;
     }
+    const snapshot = latest.current.files;
+    const target = entry ?? (isSource(latest.current.active) ? latest.current.active : null);
+    if (!target) {
+      showConsole();
+      addRow("err", "Nothing to run: create main.bit, or right-click a .bit file and choose “Set as Entry Point”.");
+      return;
+    }
     runAbort.current?.abort();
     checkAbort.current?.abort();
     const ac = new AbortController();
     runAbort.current = ac;
-    const source = codeRef.current;
     const args = parseArgs(argsLine);
     setBusy("run");
     showConsole();
-    addRow("cmd", runCommandLine(opt, args, stdin, activeFile));
+    addRow("cmd", runCommandLine(opt, args, stdin, target));
 
     try {
-      const res = await compileWithRetry({ code: source, mode: "run", opt, stdin, args, files: extraFiles(files, activeFile) }, ac.signal);
+      const res = await compileWithRetry({ ...projectRequest(snapshot, target), mode: "run", opt, stdin, args }, ac.signal);
       setServerError(null);
       setLastRun(res);
-      if (codeRef.current === source) {
-        setDiagnostics(res.diagnostics);
-        setDiagnosticsSource(source);
-      }
-      const errors = res.diagnostics.filter((d) => d.severity === "error" || d.severity === "fatal");
-      const warnings = res.diagnostics.filter((d) => d.severity === "warning");
-      showDiagnostics(res);
+      const ds = located(res.diagnostics, target);
+      if (latest.current.files === snapshot) setDiag({ list: ds, files: snapshot, target });
+      const errors = ds.filter((d) => d.severity === "error" || d.severity === "fatal");
+      const warnings = ds.filter((d) => d.severity === "warning");
+      showDiagnostics(ds, res.compilerOutput);
 
       if (res.failedAt === "compile") {
         addRow("sys", `Compilation failed: ${errors.length} error(s), ${warnings.length} warning(s) in ${Math.round(res.compileTimeMs)} ms.`);
@@ -519,25 +433,28 @@ export default function App() {
         setBusy(null);
       }
     }
-  }, [opt, argsLine, stdin, addRow, showDiagnostics, serverInfo, auth, setUser, showConsole]);
+  }, [opt, argsLine, stdin, addRow, showDiagnostics, serverInfo, auth, setUser, showConsole, entry, latest]);
 
   const stop = useCallback(() => runAbort.current?.abort(), []);
 
   // ── format ─────────────────────────────────────────────────────────────
   const format = useCallback(async () => {
-    const source = codeRef.current;
+    const target = latest.current.active;
+    if (!isSource(target)) return;
+    const snapshot = latest.current.files;
+    const source = snapshot[target];
     setBusy((b) => b ?? "format");
     try {
-      const res = await compileWithRetry({ code: source, mode: "format", files: extraFiles(files, activeFile) });
-      if (codeRef.current !== source) {
+      const res = await compileWithRetry({ ...projectRequest(snapshot, target), mode: "format" });
+      if (latest.current.active !== target || latest.current.files[target] !== source) {
         addRow("sys", "The code changed while it was being formatted; try again.");
       } else if (!res.success || res.formatted === undefined) {
         showConsole();
-        addRow("cmd", `biton fmt ${SOURCE_FILE}`);
-        showDiagnostics(res);
+        addRow("cmd", `biton fmt ${target}`);
+        showDiagnostics(located(res.diagnostics, target), res.compilerOutput);
         addRow("err", "Formatting failed.");
       } else if (res.formatted === source) {
-        const broken = diagnosticsSource === source && diagnostics.some((d) => d.severity === "error" || d.severity === "fatal");
+        const broken = diag.target === target && diag.files === snapshot && diag.list.some((d) => d.file === target && (d.severity === "error" || d.severity === "fatal"));
         if (broken) addRow("sys", "Not formatted: biton fmt leaves code with syntax errors as it is.");
       } else {
         replaceCode(res.formatted);
@@ -547,54 +464,60 @@ export default function App() {
     } finally {
       setBusy((b) => (b === "format" ? null : b));
     }
-  }, [addRow, showDiagnostics, replaceCode, diagnostics, diagnosticsSource, showConsole]);
+  }, [addRow, showDiagnostics, replaceCode, diag, showConsole, latest]);
 
-  // ── share ──────────────────────────────────────────────────────────────
-  const [toast, setToast] = useState<string | null>(null);
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 2600);
-    return () => clearTimeout(t);
-  }, [toast]);
-
+  // ── clipboard and share ────────────────────────────────────────────────
   const copy = useCallback(
     async (text: string, done = "Copied") => {
       try {
         await navigator.clipboard.writeText(text);
-        setToast(done);
+        notify(done);
         return true;
       } catch {
         return false;
       }
     },
-    [],
+    [notify],
   );
 
   const share = useCallback(async () => {
     const args = parseArgs(argsLine);
-    const fragment = await encodeShare({ code: codeRef.current, stdin: stdin || undefined, args: args.length ? args : undefined });
+    const s = latest.current;
+    const fileCount = listFiles(s.files).length;
+    const fragment = await encodeShare(
+      fileCount > 1
+        ? { code: codeRef.current, files: s.files, entry: entry ?? undefined, active: s.active ?? undefined, stdin: stdin || undefined, args: args.length ? args : undefined }
+        : { code: codeRef.current, stdin: stdin || undefined, args: args.length ? args : undefined },
+    );
     const url = `${window.location.origin}${window.location.pathname}#${fragment}`;
     if (url.length > MAX_SHARE_URL) {
       showConsole();
-      addRow("err", `This program is too large for a share link (${url.length} characters); download it instead.`);
+      addRow("err", `This ${fileCount > 1 ? "project" : "program"} is too large for a share link (${url.length} characters); download it instead.`);
       return;
     }
-    if (!(await copy(url, "Share link copied — it includes the code, stdin and arguments"))) {
+    const what = fileCount > 1 ? `all ${fileCount} files` : "the code";
+    if (!(await copy(url, `Share link copied — it includes ${what}, stdin and arguments`))) {
       showConsole();
       addRow("sys", `Share link:\n${url}`);
     }
-  }, [argsLine, stdin, addRow, copy, showConsole]);
+  }, [argsLine, stdin, addRow, copy, showConsole, latest, entry]);
 
   // ── emit (pipeline) ────────────────────────────────────────────────────
   const runEmit = useCallback(
     async (kind: EmitKind) => {
+      const target = latest.current.active;
+      if (!isSource(target)) {
+        setEmit({ kind, text: "Open a .bit file to see what the compiler makes of it.", source: null, failed: true, loading: false });
+        return;
+      }
       emitAbort.current?.abort();
       const ac = new AbortController();
       emitAbort.current = ac;
-      const source = codeRef.current;
+      const snapshot = latest.current.files;
+      const source = snapshot[target];
       setEmit((s) => ({ ...s, kind, loading: true }));
       try {
-        const res = await compileWithRetry({ code: source, mode: "emit", emit: kind, opt, files: extraFiles(files, activeFile) }, ac.signal);
+        const res = await compileWithRetry({ ...projectRequest(snapshot, target), mode: "emit", emit: kind, opt }, ac.signal);
         const failed = !res.success;
         const text = failed
           ? [...res.diagnostics.map((d) => d.rendered), res.compilerOutput].filter(Boolean).join("\n\n") || "compilation failed"
@@ -607,12 +530,21 @@ export default function App() {
         if (emitAbort.current === ac) emitAbort.current = null;
       }
     },
-    [opt],
+    [opt, latest],
   );
 
-  // ── files ──────────────────────────────────────────────────────────────
+  // ── file actions ───────────────────────────────────────────────────────
   const currentExample = useMemo(() => EXAMPLE_LIST.find((e) => e.code === code)?.key ?? null, [code]);
   const [lastExample, setLastExample] = useState<string | null>(null);
+
+  const openFile = useCallback(
+    (path: string) => {
+      actions.open(path);
+      if (sidebarFloats) setSidePanel(null);
+      requestAnimationFrame(() => editor.current?.focus());
+    },
+    [actions, sidebarFloats],
+  );
 
   const loadExample = (key: string) => {
     const ex = EXAMPLE_BY_KEY[key];
@@ -624,27 +556,89 @@ export default function App() {
     editor.current?.focus();
   };
 
-  const downloadCode = () => {
-    const url = URL.createObjectURL(new Blob([codeRef.current], { type: "text/plain" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = activeFile;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-  };
+  const download = useCallback(
+    async (path: string) => {
+      const s = latest.current;
+      if (isFile(s.files, path)) {
+        downloadBlob(new Blob([s.files[path]], { type: "text/plain;charset=utf-8" }), basename(path));
+        return;
+      }
+      // A folder, or "" for the whole project, as a .zip of its contents.
+      const prefix = path ? `${path}/` : "";
+      const entries: Record<string, string> = {};
+      for (const [k, v] of Object.entries(s.files)) if (k.startsWith(prefix)) entries[k.slice(prefix.length)] = v;
+      delete entries[""];
+      downloadBlob(await zip(entries), `${path ? basename(path) : "biton-project"}.zip`);
+    },
+    [latest],
+  );
+  const downloadRef = useRef(download);
+  downloadRef.current = download;
 
-  const uploadCode = (name: string, text: string) => {
-    // Add as a new file or replace active file if same name
-    setFiles((f) => ({ ...f, [name]: text }));
-    setActiveFile(name);
-    setToast(`Opened ${name}`);
-  };
+  const deleteWithUndo = useCallback(
+    (path: string) => {
+      const { before, count } = actions.remove(path);
+      const what = kindOf(before.files, path) === "folder" ? `${basename(path)} and ${count} file${count === 1 ? "" : "s"}` : basename(path);
+      notify({ text: `Deleted ${what}`, action: { label: "Undo", run: () => actions.replace(before) } });
+    },
+    [actions, notify],
+  );
+
+  const moveFile = useCallback(
+    (from: string, to: string) => {
+      actions.move(from, to);
+      if (dirname(from) !== dirname(to)) notify(`Moved to ${dirname(to) || "the top level"}`);
+    },
+    [actions, notify],
+  );
+
+  /** Bring files from the user's computer into `folder`, asking before replacing anything. */
+  async function importFiles(picked: Picked[], folder: string) {
+    const { entries, skipped } = await readPicked(picked);
+    const placed = entries.map((e) => ({ path: joinPath(folder, e.path), content: e.content }));
+    const skippedNote = skipped.length ? ` ${skipped.length} skipped (${[...new Set(skipped.map((s) => s.reason))].join(", ")}).` : "";
+    if (placed.length === 0) {
+      notify({ text: `Nothing imported.${skippedNote}`, tone: "error" });
+      return;
+    }
+    const current = latest.current.files;
+    const conflicts = placed.filter((e) => isFile(current, e.path) && current[e.path] !== e.content).map((e) => e.path);
+    if (conflicts.length) setAsk({ kind: "import", entries: placed, conflicts, skipped: skipped.length });
+    else finishImport(placed, "replace", skippedNote);
+  }
+
+  function finishImport(entries: Array<{ path: string; content: string }>, mode: "replace" | "keep-both", note = "") {
+    let files = latest.current.files;
+    const out: Array<{ path: string; content: string }> = [];
+    for (const e of entries) {
+      let path = e.path;
+      const clash = pathProblem(files, path, "file");
+      if (clash && !(mode === "replace" && isFile(files, path))) path = uniquePath(files, path);
+      if (pathProblem(files, path, "file") && !isFile(files, path)) continue; // under a file of the same name
+      out.push({ path, content: e.content });
+      files = { ...files, [path]: e.content };
+    }
+    actions.writeMany(out);
+    const firstSource = out.find((e) => e.path.endsWith(".bit")) ?? out[0];
+    if (out.length === 1 || !latest.current.active) actions.open(firstSource.path);
+    const limit = serverInfo?.limits.maxProjectBytes;
+    const size = Object.values(files).reduce((n, t) => n + new Blob([t]).size, 0);
+    const tooBig = limit && size > limit ? ` The project is now over the server's ${Math.round(limit / 1024)} KB limit, so it won't compile until it is smaller.` : "";
+    notify({ text: `Imported ${out.length} file${out.length === 1 ? "" : "s"}.${note}${tooBig}`, tone: tooBig ? "error" : undefined });
+  }
+
+  /** AI context: the modules the open file imports, trimmed. */
+  const aiRelated = useCallback(() => {
+    const s = latest.current;
+    if (!s.active) return undefined;
+    return importsOf(s.files, s.active, s.files[s.active] ?? "")
+      .slice(0, AI_MAX_RELATED_FILES)
+      .map((path) => ({ path, content: s.files[path].slice(0, AI_MAX_RELATED_CHARS) }));
+  }, [latest]);
 
   const saveNow = useCallback(() => {
-    save(workspace());
-    setToast("Saved in this browser");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stdin, argsLine, opt, sidePanel, showPanel, outputTab, split, fontSize]);
+    if (persist()) notify("Saved in this browser");
+  }, [persist, notify]);
 
   // ── console commands ───────────────────────────────────────────────────
   const runCommand = (query: string) => {
@@ -660,18 +654,23 @@ export default function App() {
         addRow(
           "out",
           [
-            "run                 compile with the selected -O level and run",
-            "check               type-check only (biton --check)",
-            "fmt                 format the code (biton fmt)",
+            "run                 compile the entry file with the selected -O level and run it",
+            "check               type-check the open file (biton --check)",
+            "fmt                 format the open file (biton fmt)",
             `emit <kind>         show compiler output: ${EMIT_KINDS.join(" | ")}`,
+            "ls                  list the project's files",
+            "open <path>         open a file",
+            "entry [path]        show or set the file Run starts from",
             "args [arguments]    show or set the program's arguments",
             "opt <O0|O1|O2|O3>   set the optimisation level",
             "theme <light|dark|system>",
-            "share               copy a link to this program",
+            "ai [on|off]         turn inline AI suggestions on or off",
+            "share               copy a link to this program (or project)",
             "login / logout      sign in (needed to run programs) / sign out",
             "whoami · version · clear",
             "",
-            "Ctrl/⌘+Enter run · Esc stop · Shift+Alt+F format · Ctrl/⌘+F find · Ctrl/⌘+/ comment · Ctrl/⌘+Space complete",
+            `${MOD}+Enter run · Esc stop · Shift+Alt+F format · ${MOD}+P go to file · Alt+W close tab · ${MOD}+B explorer · ${MOD}+J panel`,
+            "AI: Tab accept · " + MOD + "+→ accept word · Esc dismiss · Alt+\\ suggest now",
           ].join("\n"),
         );
         return;
@@ -685,17 +684,42 @@ export default function App() {
       case "share":
         share();
         return;
-      case "check":
+      case "check": {
         echo();
-        (() => {
-          return compile({ code: codeRef.current, mode: "check", files: extraFiles(files, activeFile) });
-        })()
+        const target = latest.current.active;
+        if (!isSource(target)) {
+          addRow("err", "Open a .bit file to check it.");
+          return;
+        }
+        compile({ ...projectRequest(latest.current.files, target), mode: "check" })
           .then((res) => {
-            showDiagnostics(res);
-            addRow("sys", res.success ? `No errors (${Math.round(res.compileTimeMs)} ms).` : "Type check failed.");
+            showDiagnostics(located(res.diagnostics, target), res.compilerOutput);
+            addRow("sys", res.success ? `No errors in ${target} (${Math.round(res.compileTimeMs)} ms).` : "Type check failed.");
           })
           .catch((err) => addRow("err", `Request failed: ${err.message}`));
         return;
+      }
+      case "ls":
+        echo();
+        addRow("out", listFiles(latest.current.files).map((p) => (p === entry ? `${p}  ← entry` : p)).join("\n") || "(no files)");
+        return;
+      case "open": {
+        echo();
+        const path = rest.join(" ");
+        if (isFile(latest.current.files, path)) openFile(path);
+        else addRow("err", `No file “${path}”. Type “ls” to list them.`);
+        return;
+      }
+      case "entry": {
+        echo();
+        const path = rest.join(" ");
+        if (!path) addRow("sys", entry ? `Run starts from ${entry}.` : "No entry file: create main.bit or choose one.");
+        else if (isFile(latest.current.files, path) && path.endsWith(".bit")) {
+          actions.setEntry(path);
+          addRow("sys", `Run now starts from ${path}.`);
+        } else addRow("err", `No .bit file “${path}”.`);
+        return;
+      }
       case "emit": {
         echo();
         const kind = rest[0] as EmitKind;
@@ -736,6 +760,27 @@ export default function App() {
         setThemePref(t);
         return;
       }
+      case "ai": {
+        echo();
+        if (!aiAvailable) {
+          addRow("err", "AI completion is not configured on this server.");
+          return;
+        }
+        const arg = (rest[0] || "").toLowerCase();
+        if (arg && arg !== "on" && arg !== "off") {
+          addRow("err", "Usage: ai [on|off]");
+          return;
+        }
+        const next = arg ? arg === "on" : !aiEnabled;
+        if (next && serverInfo?.ai?.requireSignIn && !auth?.user) {
+          setAiEnabled(true);
+          setSignIn({ reason: "Sign in to use AI completion." });
+          return;
+        }
+        setAiEnabled(next);
+        addRow("sys", next ? "AI suggestions are on: they appear as faint text after a pause; Tab accepts." : "AI suggestions are off.");
+        return;
+      }
       case "login":
         echo();
         if (auth?.user) addRow("sys", `Already signed in as ${auth.user.email}.`);
@@ -765,6 +810,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return; // the editor handled it
       const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
       if (mod && e.key === "Enter") {
         e.preventDefault();
         run();
@@ -774,66 +820,128 @@ export default function App() {
       } else if (e.shiftKey && e.altKey && e.code === "KeyF") {
         e.preventDefault();
         format();
-      } else if (mod && e.key.toLowerCase() === "s") {
+      } else if (mod && !e.shiftKey && key === "s") {
         e.preventDefault();
         saveNow();
-      } else if (mod && e.key.toLowerCase() === "b") {
+      } else if (mod && !e.shiftKey && key === "p") {
+        e.preventDefault();
+        setQuickOpen(true);
+      } else if (e.altKey && !mod && e.code === "KeyW") {
+        e.preventDefault();
+        if (latest.current.active) actions.closeTabs([latest.current.active]);
+      } else if (mod && key === "b") {
         e.preventDefault();
         setSidePanel((p) => (p ? null : dockedPanel.current ?? "files"));
-      } else if (mod && e.key.toLowerCase() === "j") {
+      } else if (mod && key === "j") {
         e.preventDefault();
         setShowPanel((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [run, stop, format, saveNow]);
+  }, [run, stop, format, saveNow, actions, latest]);
 
-  const diagnosticsStale = diagnosticsSource !== code;
-  const editorDiagnostics = useMemo(() => (diagnosticsStale ? null : diagnostics), [diagnostics, diagnosticsStale]);
-  const errorCount = diagnostics.filter((d) => d.severity === "error" || d.severity === "fatal").length;
-  const warningCount = diagnostics.filter((d) => d.severity === "warning").length;
+  // After a diagnostic opens another file, jump once that file is in the editor.
+  useEffect(() => {
+    const j = pendingJump.current;
+    if (j && j.path === active) {
+      pendingJump.current = null;
+      requestAnimationFrame(() => editor.current?.jumpTo(j.line, j.col));
+    }
+  }, [active]);
 
+  const editorDiagnostics = useMemo(() => (diagnosticsStale ? null : diag.list), [diag.list, diagnosticsStale]);
+  const visibleDiagnostics = diag.list;
+  const errorCount = visibleDiagnostics.filter((d) => d.severity === "error" || d.severity === "fatal").length;
+  const warningCount = visibleDiagnostics.filter((d) => d.severity === "warning").length;
+  const problemsByFile = useMemo(() => {
+    const m = new Map<string, FileProblems>();
+    for (const d of diag.list) {
+      if (!d.file || !(d.file in files)) continue;
+      const p = m.get(d.file) ?? { errors: 0, warnings: 0 };
+      if (d.severity === "error" || d.severity === "fatal") p.errors++;
+      else if (d.severity === "warning") p.warnings++;
+      m.set(d.file, p);
+    }
+    return m;
+  }, [diag.list, files]);
+
+  const canOpen = (d: Diagnostic) => d.line > 0 && !!d.file && isFile(files, d.file);
   const jump = (d: Diagnostic) => {
-    if (inBuffer(d) || (d.file && d.file === activeFile)) {
-      editor.current?.jumpTo(d.line, d.col);
-      if (d.file && d.file !== activeFile) {
-        setActiveFile(d.file);
-      }
+    if (!canOpen(d)) return;
+    if (d.file === active) editor.current?.jumpTo(d.line, d.col);
+    else {
+      pendingJump.current = { path: d.file!, line: d.line, col: d.col };
+      actions.open(d.file!);
     }
   };
 
-  const exampleTitle = (currentExample && EXAMPLE_BY_KEY[currentExample].title) || (lastExample && `${EXAMPLE_BY_KEY[lastExample].title} (edited)`) || SOURCE_FILE;
+  const exampleTitle =
+    (currentExample && EXAMPLE_BY_KEY[currentExample].title) || (lastExample && active && `${EXAMPLE_BY_KEY[lastExample].title} (edited)`) || active || "No file open";
   const stdinLines = stdin === "" ? 0 : stdin.split("\n").length - (stdin.endsWith("\n") ? 1 : 0);
   const argCount = parseArgs(argsLine).length;
+  const allFiles = useMemo(() => listFiles(files), [files]);
+
+  const aiAvailable = !!serverInfo?.ai?.enabled;
+  const aiActive = aiAvailable && aiEnabled && (!serverInfo?.ai?.requireSignIn || !!auth?.user);
+  const toggleAI = () => {
+    if (!aiAvailable) return;
+    if (serverInfo?.ai?.requireSignIn && !auth?.user) {
+      setAiEnabled(true);
+      setSignIn({ reason: "Sign in to use AI completion." });
+      return;
+    }
+    setAiEnabled((v) => !v);
+  };
+  useEffect(() => {
+    if (!aiActive) setAiStatus({ state: "idle" });
+  }, [aiActive]);
 
   // ── layout ─────────────────────────────────────────────────────────────
   const editorPane = (
     <div className="flex flex-col h-full min-h-0 bg-[var(--editor-bg)]">
-      <div className="h-10 shrink-0 flex items-end justify-between border-b border-line bg-surface pl-1.5 pr-2">
-        <div className="flex items-end h-full">
-          <div className="relative h-[calc(100%-6px)] flex items-center gap-2 px-3 rounded-t-md bg-[var(--editor-bg)] border border-b-0 border-line text-[12.5px] text-fg -mb-px">
-            <FileCode2 className="w-3.5 h-3.5 text-accent" />
-            <span className="font-medium">{activeFile}</span>
-            {errorCount > 0 && !diagnosticsStale && <span className="w-1.5 h-1.5 rounded-full bg-danger" title={`${errorCount} error(s)`} />}
-            <span className="absolute inset-x-0 -top-px h-[2px] rounded-t-md bg-accent" />
-          </div>
+      <EditorTabs
+        tabs={tabs}
+        active={active}
+        entry={entry}
+        problems={problemsByFile}
+        onSelect={(p) => actions.open(p)}
+        onClose={actions.closeTabs}
+        onReorder={actions.reorderTabs}
+        onReveal={(p) => {
+          actions.open(p);
+          setSidePanel("files");
+          setRevealToken((n) => n + 1);
+        }}
+        onCopyPath={(p) => void copy(p, "Path copied")}
+        trailing={
+          <>
+            <IconButton label="Undo (Ctrl+Z)" size="sm" onClick={() => editor.current?.undo()} disabled={!undoState.canUndo || !active}>
+              <Undo2 className="w-3.5 h-3.5" />
+            </IconButton>
+            <IconButton label="Redo (Ctrl+Shift+Z)" size="sm" onClick={() => editor.current?.redo()} disabled={!undoState.canRedo || !active}>
+              <Redo2 className="w-3.5 h-3.5" />
+            </IconButton>
+          </>
+        }
+      />
+      {conflict && (
+        <div role="alert" className="shrink-0 flex flex-wrap items-center gap-2 px-3 py-2 border-b border-line bg-warning-soft text-[12.5px] text-fg">
+          <span className="flex-1 min-w-[200px]">This project was changed in another browser tab. Saving is paused until you choose which version to keep.</span>
+          <Button size="sm" onClick={() => resolveConflict(true)}>
+            Load the other tab's version
+          </Button>
+          <Button size="sm" variant="primary" onClick={() => resolveConflict(false)}>
+            Keep this version
+          </Button>
         </div>
-        <div className="flex items-center gap-0.5 self-center">
-          <IconButton label="Undo (Ctrl+Z)" size="sm" onClick={() => editor.current?.undo()} disabled={!undoState.canUndo}>
-            <Undo2 className="w-3.5 h-3.5" />
-          </IconButton>
-          <IconButton label="Redo (Ctrl+Shift+Z)" size="sm" onClick={() => editor.current?.redo()} disabled={!undoState.canRedo}>
-            <Redo2 className="w-3.5 h-3.5" />
-          </IconButton>
-        </div>
-      </div>
-      <div className="flex-1 min-h-0">
+      )}
+      <div className="relative flex-1 min-h-0">
         <CodeEditor
-          key={activeFile}
           ref={editor}
-          initialValue={code}
-          onChange={setCode}
+          path={active ?? ""}
+          value={code}
+          onChange={(path, text) => path && actions.write(path, text)}
           onCursor={setCursor}
           onHistory={setUndoState}
           diagnostics={editorDiagnostics}
@@ -841,7 +949,27 @@ export default function App() {
           onFormat={format}
           onSave={saveNow}
           fontSize={fontSize}
+          aiEnabled={aiActive && isSource(active)}
+          aiRelated={aiRelated}
+          onAIStatus={setAiStatus}
         />
+        {active === null && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--editor-bg)] text-center p-6">
+            <div className="text-[14px] font-medium text-fg">No file is open</div>
+            <div className="text-[12.5px] text-muted leading-relaxed">
+              Open one from the explorer, or press <Kbd>{MOD}</Kbd> <Kbd>P</Kbd> to go to a file.
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => setQuickOpen(true)} disabled={allFiles.length === 0}>
+                Go to file…
+              </Button>
+              <Button size="sm" variant="primary" onClick={() => actions.create(freshPath(files, "", allFiles.length ? "untitled.bit" : SOURCE_FILE), "file")}>
+                <FilePlus2 className="w-3.5 h-3.5" />
+                New file
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -881,7 +1009,9 @@ export default function App() {
         {outputTab === "input" && (
           <InputPanel args={argsLine} setArgs={setArgsLine} stdin={stdin} setStdin={setStdin} maxStdinBytes={serverInfo?.limits.maxStdinBytes} />
         )}
-        {outputTab === "problems" && <Problems diagnostics={diagnostics} stale={diagnosticsStale} checking={checking} onSelect={jump} />}
+        {outputTab === "problems" && (
+          <Problems diagnostics={visibleDiagnostics} stale={diagnosticsStale} checking={checking} canOpen={canOpen} onSelect={jump} />
+        )}
         {outputTab === "pipeline" && <Pipeline emit={emit} code={code} opt={opt} runEmit={runEmit} copy={(t) => copy(t)} />}
       </div>
     </div>
@@ -889,13 +1019,38 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-dvh min-h-[420px] bg-bg text-fg overflow-hidden">
-      {signIn && auth && (
-        <SignInDialog
-          providers={auth.providers}
-          reason={signIn.reason}
-          error={signIn.error}
-          onClose={() => setSignIn(null)}
-          beforeLeave={() => save(workspace())}
+      {quickOpen && <QuickOpen files={allFiles} recent={project.recent} onOpen={openFile} onClose={() => setQuickOpen(false)} />}
+
+      {ask?.kind === "import" && (
+        <ConfirmDialog
+          title={`Replace ${ask.conflicts.length} existing file${ask.conflicts.length === 1 ? "" : "s"}?`}
+          description={
+            <>
+              {ask.conflicts.slice(0, 5).map((c) => (
+                <span key={c} className="block font-mono text-fg">
+                  {c}
+                </span>
+              ))}
+              {ask.conflicts.length > 5 && <span className="block">and {ask.conflicts.length - 5} more</span>}
+              <span className="block mt-2">Replacing overwrites them; keeping both imports the new ones under new names.</span>
+            </>
+          }
+          confirmLabel="Replace"
+          destructive
+          alternative={{
+            label: "Keep both",
+            onSelect: () => {
+              setAsk(null);
+              finishImport(ask.entries, "keep-both");
+            },
+          }}
+          onConfirm={() => {
+            const before = latest.current;
+            setAsk(null);
+            finishImport(ask.entries, "replace");
+            notify({ text: `Replaced ${ask.conflicts.length} file(s)`, action: { label: "Undo", run: () => actions.replace(before) } });
+          }}
+          onClose={() => setAsk(null)}
         />
       )}
 
@@ -914,7 +1069,13 @@ export default function App() {
         toggleSidebar={() => setSidePanel((p) => (p ? null : dockedPanel.current ?? "files"))}
         showPanel={showPanel}
         togglePanel={() => setShowPanel((v) => !v)}
+        aiAvailable={aiAvailable}
+        aiEnabled={aiActive}
+        toggleAI={toggleAI}
         title={exampleTitle}
+        projectName={projectName}
+        onHome={onHome}
+        onRenameProject={onRename}
       />
 
       <div className="flex flex-1 min-h-0 relative">
@@ -930,21 +1091,26 @@ export default function App() {
               examples={EXAMPLE_LIST}
               currentExample={currentExample}
               loadExample={loadExample}
-              downloadCode={downloadCode}
-              uploadCode={uploadCode}
-              fileName={activeFile}
-              modified={true}
-              files={files}
-              activeFile={activeFile}
-              onFileSelect={(name) => {
-                setActiveFile(name);
-                if (sidebarFloats) setSidePanel(null);
+              explorer={{
+                files,
+                activeFile: active,
+                entry,
+                problems: problemsByFile,
+                revealToken,
+                onOpen: openFile,
+                onCreate: (path, kind) => actions.create(path, kind),
+                onMove: moveFile,
+                onDuplicate: (path) => actions.duplicate(path),
+                onDelete: deleteWithUndo,
+                onSetEntry: (path) => {
+                  actions.setEntry(path);
+                  notify(`Run now starts from ${path}`);
+                },
+                onDownload: (path) => void download(path),
+                onCopyPath: (path) => void copy(path, "Path copied"),
+                onImport: (picked, folder) => void importFiles(picked, folder),
+                onError: (message) => notify({ text: message, tone: "error" }),
               }}
-              onCreateFile={createFile}
-              onCreateFolder={createFolder}
-              onDeleteFile={deleteFile}
-              onRenameFile={renameFile}
-              onCopyFile={copyFile}
             />
           </div>
         )}
@@ -968,7 +1134,7 @@ export default function App() {
       <StatusBar
         serverInfo={serverInfo}
         serverError={serverError}
-        diagnostics={diagnosticsStale ? null : diagnostics}
+        diagnostics={diagnosticsStale && isSource(active) ? null : visibleDiagnostics}
         opt={opt}
         cursor={cursor}
         openProblems={() => {
@@ -977,15 +1143,36 @@ export default function App() {
         }}
         fontSize={fontSize}
         setFontSize={setFontSize}
+        aiEnabled={aiActive}
+        aiStatus={aiStatus}
+        onAIClick={() => (aiStatus.state === "signin" ? setSignIn({ reason: "Sign in to use AI completion." }) : toggleAI())}
+        entry={entry}
+        onEntryClick={() => entry && openFile(entry)}
       />
 
       {toast && (
         <div
           role="status"
-          className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-3.5 h-9 rounded-lg bg-fg text-bg text-[13px] font-medium shadow-pop animate-pop"
+          className={cx(
+            "fixed bottom-10 left-1/2 -translate-x-1/2 z-50 w-max flex items-center gap-3 pl-3.5 pr-2 min-h-9 py-1.5 max-w-[min(560px,calc(100vw-32px))] rounded-lg text-[13px] font-medium shadow-pop animate-pop",
+            toast.tone === "error" ? "bg-danger text-white dark:text-[#1f0606]" : "bg-fg text-bg",
+          )}
         >
-          <Braces className="w-3.5 h-3.5 opacity-70" />
-          {toast}
+          <Braces className="w-3.5 h-3.5 opacity-70 shrink-0" />
+          <span className="flex-1">{toast.text}</span>
+          {toast.action && (
+            <button
+              type="button"
+              onClick={() => {
+                toast.action!.run();
+                setToastState(null);
+              }}
+              className="shrink-0 h-7 px-2.5 rounded-md font-semibold underline-offset-2 hover:underline bg-white/10"
+            >
+              {toast.action.label}
+            </button>
+          )}
+          {!toast.action && <span className="w-1" />}
         </div>
       )}
     </div>

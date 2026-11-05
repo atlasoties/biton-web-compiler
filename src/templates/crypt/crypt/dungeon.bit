@@ -1,0 +1,148 @@
+// Level generation: rooms placed at random without overlapping, joined by
+// L-shaped corridors from left to right, then filled with monsters and loot.
+// Everything comes from the world's seeded generator, so a seed always
+// builds the same dungeon.
+import std.sort.{sort_by}
+import crypt.world.{World, Room, Monster, Item, Kind, Loot, W, H, DEPTHS, WALL, FLOOR, STAIRS, toughness}
+
+const MAX_ROOMS: int = 8
+
+fn overlaps(a: *Room, b: *Room) bool {
+    // Keep a wall's width between rooms.
+    return a.x - 2 < b.x + b.w and b.x - 2 < a.x + a.w and a.y - 2 < b.y + b.h and b.y - 2 < a.y + a.h
+}
+
+fn by_x(a: *Room, b: *Room) int { return a.x - b.x }
+
+fn sign(n: int) int {
+    if n > 0 { return 1 }
+    if n < 0 { return -1 }
+    return 0
+}
+
+fn cx(r: *Room) int { return r.x + r.w / 2 }
+fn cy(r: *Room) int { return r.y + r.h / 2 }
+
+fn dig(w: *World, x: int, y: int) {
+    if w.tiles[y][x] == WALL { w.tiles[y][x] = FLOOR }
+}
+
+fn corridor(w: *World, a: *Room, b: *Room) {
+    x := cx(a)
+    y := cy(a)
+    horizontal_first := w.rng.chance(0.5)
+    if horizontal_first {
+        while x != cx(b) {
+            dig(w, x, y)
+            x += sign(cx(b) - x)
+        }
+    }
+    while y != cy(b) {
+        dig(w, x, y)
+        y += sign(cy(b) - y)
+    }
+    while x != cx(b) {
+        dig(w, x, y)
+        x += sign(cx(b) - x)
+    }
+    dig(w, x, y)
+}
+
+// A free floor cell inside a room (not the hero's, not taken).
+fn free_spot(w: *World, r: *Room, x: *int, y: *int) bool {
+    for _ in 0..30 {
+        px := w.rng.range(r.x, r.x + r.w)
+        py := w.rng.range(r.y, r.y + r.h)
+        taken := (px == w.hx and py == w.hy) or w.tiles[py][px] != FLOOR
+        for i in 0..w.monsters.len() {
+            m := w.monsters.at(i)
+            if m.x == px and m.y == py { taken = true }
+        }
+        for i in 0..w.items.len() {
+            it := w.items.at(i)
+            if it.x == px and it.y == py { taken = true }
+        }
+        if not taken {
+            unsafe {
+                *x = px
+                *y = py
+            }
+            return true
+        }
+    }
+    return false
+}
+
+// Deeper levels bring nastier monsters.
+fn pick_kind(w: *World) Kind {
+    roll := w.rng.range(0, 10) + (w.depth - 1) * 2
+    if roll < 4 { return Kind.Rat }
+    if roll < 8 { return Kind.Goblin }
+    if roll < 11 { return Kind.Orc }
+    return Kind.Wraith
+}
+
+pub fn build_level(w: *World) {
+    for y in 0..H {
+        for x in 0..W { w.tiles[y][x] = WALL }
+    }
+    w.rooms.clear()
+    w.monsters.clear()
+    w.items.clear()
+
+    tries := 0
+    while w.rooms.len() < MAX_ROOMS and tries < 300 {
+        tries += 1
+        rw := w.rng.range(5, 12)
+        rh := w.rng.range(3, 6)
+        r := Room(x: w.rng.range(1, W - rw - 1), y: w.rng.range(1, H - rh - 1), w: rw, h: rh)
+        fits := true
+        for i in 0..w.rooms.len() {
+            if overlaps(&r, w.rooms.at(i)) { fits = false }
+        }
+        if not fits { continue }
+        for y in r.y..r.y + r.h {
+            for x in r.x..r.x + r.w { w.tiles[y][x] = FLOOR }
+        }
+        w.rooms.push(r)
+    }
+    sort_by(&w.rooms, by_x)
+    for i in 1..w.rooms.len() { corridor(w, w.rooms.at(i - 1), w.rooms.at(i)) }
+
+    // The hero enters in the leftmost room; the way on is in the rightmost.
+    first := w.rooms.at(0)
+    last := w.rooms.at(w.rooms.len() - 1)
+    w.hx = cx(first)
+    w.hy = cy(first)
+    if w.depth < DEPTHS {
+        w.tiles[cy(last)][cx(last)] = STAIRS
+    } else {
+        w.items.push(Item(loot: Loot.Crystal, x: cx(last), y: cy(last), taken: false))
+    }
+
+    for i in 1..w.rooms.len() {
+        r := w.rooms.at(i)
+        x := 0
+        y := 0
+        for _ in 0..w.rng.range(0, 1 + w.depth) {
+            if free_spot(w, r, &x, &y) {
+                k := pick_kind(w)
+                w.monsters.push(Monster(kind: k, x: x, y: y, hp: toughness(k), alive: true))
+            }
+        }
+        if w.rng.chance(0.7) and free_spot(w, r, &x, &y) {
+            w.items.push(Item(loot: Loot.Gold(w.rng.range(5, 16) * w.depth), x: x, y: y, taken: false))
+        }
+        if w.rng.chance(0.3) and free_spot(w, r, &x, &y) {
+            w.items.push(Item(loot: Loot.Potion, x: x, y: y, taken: false))
+        }
+    }
+    // A guardian waits by the crystal.
+    if w.depth == DEPTHS {
+        x := 0
+        y := 0
+        if free_spot(w, last, &x, &y) {
+            w.monsters.push(Monster(kind: Kind.Wraith, x: x, y: y, hp: toughness(Kind.Wraith) + 8, alive: true))
+        }
+    }
+}

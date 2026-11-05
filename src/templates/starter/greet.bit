@@ -1,0 +1,4 @@
+// A module next to main.bit: `import greet`.
+fn hello(name: string) {
+    print("Hello, {name}!")
+}

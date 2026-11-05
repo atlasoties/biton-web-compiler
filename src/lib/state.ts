@@ -1,7 +1,7 @@
-import type { Diagnostic, EmitKind } from "../../shared/api.ts";
+import { DEFAULT_ENTRY, type EmitKind } from "../../shared/api.ts";
 
-/** Name the editor buffer is compiled under on the server. */
-export const SOURCE_FILE = "main.bit";
+/** Name of the first file in a new project. */
+export const SOURCE_FILE = DEFAULT_ENTRY;
 
 export type Busy = "run" | "format" | null;
 
@@ -13,10 +13,6 @@ export interface EmitState {
   failed: boolean;
   loading: boolean;
 }
-
-/** Diagnostics that point into the editor buffer (not into an imported module). */
-export const inBuffer = (d: Diagnostic) => d.line > 0 && (d.file === null || d.file === SOURCE_FILE); // kept for compatibility
-export const inCurrentBuffer = (d: Diagnostic, activeFile: string) => d.line > 0 && (d.file === null || d.file === activeFile);
 
 export type TerminalRowType = "cmd" | "out" | "err" | "warn" | "sys";
 export interface TerminalRow {

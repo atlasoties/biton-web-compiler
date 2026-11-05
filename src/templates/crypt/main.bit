@@ -1,0 +1,140 @@
+// Crypt of the Biton Crystal: a little roguelike in a multi-file project.
+//
+// Three levels of rooms and corridors stand between you (@) and the Biton
+// Crystal (*). Rats (r), goblins (g), orcs (O) and wraiths (W) get tougher
+// the deeper you go; pick up gold ($) and healing potions (!) on the way
+// down the stairs (>).
+//
+// How to play (this sandbox has no live keyboard, so moves are typed ahead):
+//   - Input tab, stdin: your moves, w a s d (up, left, down, right) and
+//     p to drink a potion, e.g. "dddd ss ddd". When they run out, or if
+//     you type none, the autopilot plays on: watch it think its way down.
+//   - Input tab, arguments: a number, the dungeon's seed. Every seed is a
+//     different dungeon; the same seed is always the same one.
+//
+// The project:  crypt/world.bit     the map, creatures, loot and drawing
+//               crypt/dungeon.bit   level generation from a seed
+//               crypt/path.bit      breadth-first search for paths
+//               crypt/rules.bit     moving, fighting, potions, monsters
+//               crypt/autopilot.bit the computer player
+import std.io.{read_line}
+import std.env.{args}
+import std.strings.{parse_int}
+import std.random.{seeded}
+import crypt.world.{World, DEPTHS, draw}
+import crypt.dungeon.{build_level}
+import crypt.rules.{Command, act, monsters_turn, end_turn, describe}
+import crypt.autopilot.{decide}
+
+const MAX_TURNS: int = 1500
+
+// A key from the input: wasd (or hjkl) to move, p to drink, . to wait.
+fn command_for(c: u8) Command? {
+    when c as char {
+        'w', 'k' -> return Some(Command.Up)
+        's', 'j' -> return Some(Command.Down)
+        'a', 'h' -> return Some(Command.Left)
+        'd', 'l' -> return Some(Command.Right)
+        'p' -> return Some(Command.Drink)
+        '.' -> return Some(Command.Wait)
+        else -> return null
+    }
+}
+
+fn main() int {
+    seed := 33
+    argv := args()
+    if argv.len() > 0 {
+        seed = (parse_int(argv.at(0).as_str()) ?? (seed as i64)) as int
+    }
+
+    // Everything typed on stdin, as one string of moves.
+    moves: Text
+    loop {
+        when read_line() {
+            Some(line) -> moves.append(line)
+            null -> break
+        }
+    }
+
+    w: World
+    w.rng = seeded(seed as u64)
+    w.depth = 1
+    w.hp = 20
+    w.max_hp = 20
+    w.power = 3
+    w.level = 1
+    build_level(&w)
+
+    print("CRYPT OF THE BITON CRYSTAL   (seed {seed})")
+    print("Reach the crystal (*) on depth {DEPTHS}. @ you  > stairs  $ gold  ! potion  r g O W monsters")
+    print("")
+    draw(&w)
+    print("")
+
+    next := 0
+    announced := false
+    bumped := false
+    while not w.won and not w.dead and w.turn < MAX_TURNS {
+        command := Command.Wait
+        from_input := false
+        while next < moves.len() {
+            c := moves.byte_at(next)
+            next += 1
+            when command_for(c) {
+                Some(cmd) -> {
+                    command = cmd
+                    from_input = true
+                    break
+                }
+                null -> {}
+            }
+        }
+        if not from_input {
+            if not announced {
+                if moves.len() > 0 {
+                    print("")
+                    print("Your moves are used up. Here is where they took you:")
+                    draw(&w)
+                    print("The autopilot takes over.")
+                } else {
+                    print("No moves on stdin: the autopilot plays.")
+                }
+                announced = true
+            }
+            command = decide(&w)
+        }
+        if not act(&w, command) {
+            // Say so once, not for every key pressed into the same wall.
+            if from_input and not bumped {
+                when command {
+                    Drink -> print("  [{w.turn}] You have no potion.")
+                    else -> print("  [{w.turn}] You can't go {describe(command)}: there's a wall.")
+                }
+            }
+            bumped = true
+            continue
+        }
+        bumped = false
+        if w.won { break }
+        monsters_turn(&w)
+        end_turn(&w)
+    }
+
+    print("")
+    draw(&w)
+    print("")
+    score := w.gold + w.kills * 10 + (w.depth - 1) * 50
+    if w.won {
+        score += 500
+        print("*** VICTORY! You escaped with the Biton Crystal in {w.turn} turns. ***")
+    } elif w.dead {
+        print("*** You died on depth {w.depth}. The crypt keeps its crystal. ***")
+    } else {
+        print("*** You wander the crypt for {MAX_TURNS} turns and give up. ***")
+    }
+    print("Gold {w.gold}, monsters slain {w.kills}, final score {score}.")
+    print("Try another seed in the Input tab's arguments, or type your own moves.")
+    if w.won { return 0 }
+    return 1
+}

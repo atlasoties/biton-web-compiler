@@ -1,0 +1,4 @@
+fn main() int {
+    print("Hello, Biton!")
+    return 0
+}

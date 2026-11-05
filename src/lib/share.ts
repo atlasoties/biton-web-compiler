@@ -1,10 +1,17 @@
-// Share links: the buffer, its stdin and its arguments, compressed into
-// the URL fragment (#s=...). The fragment never reaches the server.
+// Share links: the program (one file, or the whole project), its stdin and
+// its arguments, compressed into the URL fragment (#s=...). The fragment
+// never reaches the server.
 
 export interface Shared {
+  /** The shared file's text (for a project, the file that was open). */
   code: string;
   stdin?: string;
   args?: string[];
+  /** A multi-file project: every file by path. */
+  files?: Record<string, string>;
+  /** The project's entry point and the file that was open. */
+  entry?: string;
+  active?: string;
 }
 
 const PREFIX = "s=";
@@ -40,10 +47,17 @@ export async function decodeShare(hash: string): Promise<Shared | null> {
     const bytes = await pipe(fromBase64Url(h.slice(PREFIX.length)), new DecompressionStream("deflate-raw"));
     const v = JSON.parse(new TextDecoder().decode(bytes)) as Partial<Shared>;
     if (typeof v.code !== "string") return null;
+    const files =
+      v.files && typeof v.files === "object" && !Array.isArray(v.files)
+        ? Object.fromEntries(Object.entries(v.files).filter((e): e is [string, string] => typeof e[1] === "string"))
+        : undefined;
     return {
       code: v.code,
       stdin: typeof v.stdin === "string" ? v.stdin : undefined,
       args: Array.isArray(v.args) ? v.args.filter((a): a is string => typeof a === "string") : undefined,
+      files: files && Object.keys(files).length ? files : undefined,
+      entry: typeof v.entry === "string" ? v.entry : undefined,
+      active: typeof v.active === "string" ? v.active : undefined,
     };
   } catch {
     return null;
