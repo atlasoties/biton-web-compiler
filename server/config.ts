@@ -29,7 +29,7 @@ export const config = {
 
   // ── compiler ──
   bitonBin: process.env.BITON_BIN || "biton",
-  /** Directory containing the stdlib's lib/; passed to biton as BITON_SOURCE_DIR. */
+  /** Directory containing the standard library's stdlib/; passed to biton as BITON_SOURCE_DIR. */
   bitonHome: process.env.BITON_HOME || "",
   includeDirs: (process.env.BITON_INCLUDE || "").split(path.delimiter).filter(Boolean),
 
@@ -78,6 +78,23 @@ export const config = {
     maxInFlight: Math.max(1, int("RATE_MAX_INFLIGHT", 3)),
     trustProxy: int("TRUST_PROXY", 0),
     maxClients: Math.max(100, int("RATE_MAX_CLIENTS", 100_000)),
+  },
+
+  // ── sign-in (API server; see server/auth.ts) ──
+  auth: {
+    /** HMAC key for sessions and sign-in tokens; required in production. */
+    secret: process.env.AUTH_SECRET || "",
+    /** Origin the app is served from, e.g. https://biton.example.com. */
+    publicUrl: (process.env.PUBLIC_URL || "").replace(/\/+$/, ""),
+    requireForRun: process.env.REQUIRE_SIGNIN_TO_RUN !== "0",
+    sessionDays: Math.max(1, int("SESSION_DAYS", 30)),
+    googleClientId: process.env.GOOGLE_CLIENT_ID || "",
+    googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+    /** smtp://user:pass@host:587 or smtps://user:pass@host:465 */
+    smtpUrl: process.env.SMTP_URL || "",
+    emailFrom: process.env.EMAIL_FROM || "",
+    emailsPerIpPerHour: Math.max(1, int("SIGNIN_EMAILS_PER_IP_PER_HOUR", 10)),
+    emailsPerAddressPerHour: Math.max(1, int("SIGNIN_EMAILS_PER_ADDRESS_PER_HOUR", 5)),
   },
 
   // ── worker server ──

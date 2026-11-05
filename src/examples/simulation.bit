@@ -1,0 +1,33 @@
+// Floating-point maths and random numbers: estimate pi by throwing
+// darts at a square, and roll dice. A seeded generator gives the same
+// numbers on every run; `rng()` seeds itself from the system instead.
+import std.random.{seeded}
+import std.math.{sqrt, fabs, PI}
+import std.text.{fixed}
+
+fn main() int {
+    r := seeded(2026)
+
+    inside := 0
+    throws := 200000
+    for _ in 0..throws {
+        x := r.fraction()
+        y := r.fraction()
+        if x * x + y * y <= 1.0 { inside += 1 }
+    }
+    estimate := 4.0 * (inside as double) / (throws as double)
+    print("pi ~ {fixed(estimate, 4)} (error {fixed(fabs(estimate - PI), 4)})")
+    print("sqrt(2) = {sqrt(2.0)}")
+
+    // Two dice, a thousand rolls: a histogram of the sums
+    counts: [13]int
+    for _ in 0..1000 {
+        counts[r.range(1, 7) + r.range(1, 7)] += 1
+    }
+    for sum in 2..13 {
+        bar: Text
+        for _ in 0..counts[sum] / 10 { bar.push_str("#") }
+        print("{sum}\t{bar}")
+    }
+    return 0
+}

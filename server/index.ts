@@ -1,7 +1,9 @@
 // Public HTTP API for the Biton web compiler.
 //
 //   GET  /api/health   compiler version, sandbox mode and limits
-//   POST /api/compile  { code, mode: "run" | "check" | "emit", emit?, opt?, stdin? }
+//   POST /api/compile  { code, mode: "run" | "check" | "emit" | "format", emit?, opt?, stdin?, args? }
+//   /api/auth/*        sign-in (server/auth.ts); runs need a signed-in user
+//                      unless REQUIRE_SIGNIN_TO_RUN=0
 //   GET  /healthz      liveness
 //   GET  /readyz       readiness (the compiler/worker is reachable)
 //
@@ -17,7 +19,17 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { CompileRequest, CompileResponse, HealthResponse } from "../shared/api.ts";
+import { randomBytes } from "node:crypto";
+
+import {
+  MAX_ARG_BYTES,
+  MAX_ARGS,
+  SIGNIN_REQUIRED,
+  type CompileRequest,
+  type CompileResponse,
+  type HealthResponse,
+} from "../shared/api.ts";
+import { AuthError, createAuth, mailerFromEnv, type Auth } from "./auth.ts";
 import { ResultCache } from "./cache.ts";
 import { config } from "./config.ts";
 import { BadRequest } from "./compiler.ts";
@@ -26,7 +38,7 @@ import { BusyError, CancelledError } from "./sandbox.ts";
 import { RateLimiter, addressKey, clientAddress, rateLimitHeaders } from "./ratelimit.ts";
 
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
-const MAX_BODY_BYTES = config.maxSourceBytes + config.maxStdinBytes + 4096;
+const MAX_BODY_BYTES = config.maxSourceBytes + config.maxStdinBytes + MAX_ARGS * (MAX_ARG_BYTES + 8) + 4096;
 
 class UpstreamError extends Error {
   readonly status: number;
@@ -78,7 +90,7 @@ function remoteBackend(): Backend {
 }
 
 async function localBackend(): Promise<Backend> {
-  const { compilerVersion, runJob } = await import("./compiler.ts");
+  const { compilerVersion, publicLimits, runJob } = await import("./compiler.ts");
   const { initSandbox } = await import("./sandbox.ts");
   for (const note of await initSandbox()) console.log(`  ${note}`);
   const version = compilerVersion();
@@ -89,12 +101,7 @@ async function localBackend(): Promise<Backend> {
         ok: true,
         compilerVersion: version,
         sandbox: config.sandbox,
-        limits: {
-          runTimeoutMs: config.runTimeoutMs,
-          compileTimeoutMs: config.compileTimeoutMs,
-          maxOutputBytes: config.maxOutputBytes,
-          maxSourceBytes: config.maxSourceBytes,
-        },
+        limits: publicLimits(),
       };
     },
     run: runJob,
@@ -140,6 +147,61 @@ if (config.rateLimit.enabled) {
 } else {
   console.warn("  rate limit: OFF");
 }
+
+// ── sign-in ─────────────────────────────────────────────────────────────
+
+async function setupAuth(): Promise<Auth> {
+  const a = config.auth;
+  let secret = a.secret;
+  if (!secret) {
+    if (config.production) throw new Error("AUTH_SECRET must be set (openssl rand -hex 32)");
+    secret = randomBytes(32).toString("hex");
+    console.warn("  AUTH_SECRET is not set: using a random one, so sessions end when the server restarts");
+  }
+  if (secret.length < 32) throw new Error("AUTH_SECRET must be at least 32 characters (openssl rand -hex 32)");
+  let publicUrl = a.publicUrl;
+  if (publicUrl) {
+    const u = new URL(publicUrl);
+    if (u.origin !== publicUrl) throw new Error(`PUBLIC_URL must be an origin only (scheme://host[:port]), got "${publicUrl}"`);
+    if (config.production && u.protocol !== "https:") console.warn("  PUBLIC_URL is not https: session cookies are not Secure");
+  } else if (config.production) {
+    throw new Error("PUBLIC_URL must be set to the address users open, e.g. https://biton.example.com");
+  }
+  if (!!a.googleClientId !== !!a.googleClientSecret) throw new Error("set both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, or neither");
+  const mailer = await mailerFromEnv({ smtpUrl: a.smtpUrl, from: a.emailFrom, production: config.production });
+  const google = a.googleClientId ? { clientId: a.googleClientId, clientSecret: a.googleClientSecret } : undefined;
+  if (a.requireForRun && !google && !mailer) {
+    throw new Error(
+      "REQUIRE_SIGNIN_TO_RUN is on but no sign-in method is configured: set GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET " +
+        "and/or SMTP_URL/EMAIL_FROM, or REQUIRE_SIGNIN_TO_RUN=0",
+    );
+  }
+  if (config.corsOrigin && a.requireForRun) {
+    console.warn("  CORS_ORIGIN is set: sign-in cookies only work when the frontend is served from the API's own origin");
+  }
+  return createAuth({
+    secret,
+    publicUrl,
+    requireForRun: a.requireForRun,
+    sessionDays: a.sessionDays,
+    google,
+    mailer,
+    secureCookies: publicUrl.startsWith("https://"),
+    emailsPerIpPerHour: a.emailsPerIpPerHour,
+    emailsPerAddressPerHour: a.emailsPerAddressPerHour,
+    clientKey: (req) => addressKey(clientAddress(req, config.rateLimit.trustProxy)),
+    log,
+  });
+}
+
+let auth: Auth;
+try {
+  auth = await setupAuth();
+} catch (e) {
+  console.error(`api: ${(e as Error).message}`);
+  process.exit(1);
+}
+for (const line of auth.describe()) console.log(`  ${line}`);
 
 // ── static files ────────────────────────────────────────────────────────
 
@@ -196,6 +258,13 @@ async function handleCompile(req: import("node:http").IncomingMessage, res: Serv
   if (Buffer.byteLength(job.code, "utf8") > config.maxSourceBytes) {
     throw new BadRequest(`source is larger than ${config.maxSourceBytes} bytes`);
   }
+  const user = auth.user(req);
+  // A request that carries a session must come from the app's own pages.
+  if (user) auth.checkOrigin(req);
+  if (job.mode === "run" && auth.requireForRun && !user) {
+    send(res, 401, { error: "sign in to run programs", code: SIGNIN_REQUIRED });
+    return;
+  }
 
   const version = workerHealth?.compilerVersion;
   const key = version && ResultCache.cacheable(job) ? ResultCache.key(version, job) : null;
@@ -215,7 +284,8 @@ async function handleCompile(req: import("node:http").IncomingMessage, res: Serv
         "Set TRUST_PROXY to the number of proxies in front of this server.",
     );
   }
-  const client = addressKey(clientAddress(req, config.rateLimit.trustProxy));
+  // Signed-in users have their own budget wherever they connect from.
+  const client = user ? `user:${user.id}` : addressKey(clientAddress(req, config.rateLimit.trustProxy));
   const decision = limiter.acquire(client, job.mode === "run" ? "run" : "light");
   const headers = rateLimitHeaders(decision);
   if (!decision.allowed) {
@@ -240,7 +310,7 @@ async function handleCompile(req: import("node:http").IncomingMessage, res: Serv
     const result = await backend.run(job, signal);
     // Cache successful and failed checks alike; skip compiler timeouts and kills.
     if (key && !/timed out|killed by/.test(result.compilerOutput)) cache.set(key, result);
-    log({ event: "compile", mode: job.mode, ok: result.success, ms: Math.round(performance.now() - started) });
+    log({ event: "compile", mode: job.mode, ok: result.success, user: user?.id, ms: Math.round(performance.now() - started) });
     send(res, 200, result, headers);
   } catch (e) {
     if (e instanceof CancelledError || signal.aborted) {
@@ -269,6 +339,7 @@ const server = createServer(async (req, res) => {
   }
 
   try {
+    if (await auth.handle(req, res, url)) return;
     switch (url.pathname) {
       case "/healthz":
         send(res, 200, { ok: true });
@@ -305,6 +376,7 @@ const server = createServer(async (req, res) => {
     send(res, 404, { error: "not found (run `npm run build` to serve the frontend from this server)" });
   } catch (e) {
     if (e instanceof BadRequest) send(res, 400, { error: e.message });
+    else if (e instanceof AuthError) send(res, e.status, { error: e.message });
     else if (e instanceof BusyError) send(res, 503, { error: e.message }, { "Retry-After": "2" });
     else if (e instanceof UpstreamError) {
       console.error(e.message);

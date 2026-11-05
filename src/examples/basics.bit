@@ -1,0 +1,69 @@
+// Biton basics: variables, functions, control flow and printing.
+// Every .bit file is a module; `main` returns the process exit code.
+import std.math.{max, gcd}
+
+const LIMIT: int = 5                 // a module-level constant
+
+fn add(a: int, b: int) int {
+    return a + b
+}
+
+fn factorial(n: i64) i64 {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
+fn sign(x: int) string {
+    if x > 0 {
+        return "positive"
+    } elif x < 0 {
+        return "negative"
+    } else {
+        return "zero"
+    }
+}
+
+fn main() int {
+    print("Hello, Biton!")
+
+    x: int = 10                      // explicit type
+    y := 32                          // inferred: int
+    print("{x} + {y} = {add(x, y)}")  // string interpolation
+    print("{LIMIT}! = {factorial(LIMIT as i64)}")
+    print("max(3, 7) = {max(3, 7)}, gcd(84, 36) = {gcd(84, 36)}")
+    print("-4 is {sign(-4)}")
+    print("1 / 3 = {1.0 / 3.0}")
+
+    // while, with break and continue
+    i := 0
+    evens := 0
+    while i < 10 {
+        i += 1
+        if i == 9 { break }
+        if i % 2 == 1 { continue }
+        evens += 1
+    }
+    print("evens below 9: {evens}")
+
+    // range loop; `end:` replaces the newline
+    print("squares:", end: "")
+    for k in 0..LIMIT {
+        print(" {(k + 1) * (k + 1)}", end: "")
+    }
+    print("")
+
+    // `and`, `or` and `not` are words
+    for n in 1..16 {
+        if n % 15 == 0 {
+            print("FizzBuzz", end: " ")
+        } elif n % 3 == 0 {
+            print("Fizz", end: " ")
+        } elif n % 5 == 0 and not (n % 3 == 0) {
+            print("Buzz", end: " ")
+        } else {
+            print(n, end: " ")
+        }
+    }
+    print("")
+    return 0
+}

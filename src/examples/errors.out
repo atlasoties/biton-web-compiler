@@ -1,0 +1,11 @@
+two_digits('4', '2'):
+  ok: 42
+two_digits('4', 'x'):
+  error: not a digit (code 120)
+safe_div(7, 0):
+  error: division by zero (code 0)
+15 is at index 2
+99 found: false
+parse_int("-17") = -17
+parse_int("abc") = 0
+safe_div(9, 3) or -1 = 3

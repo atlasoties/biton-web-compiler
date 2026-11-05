@@ -1,0 +1,39 @@
+// Reading input. Type into the "stdin" box below the editor and set the
+// program's arguments next to it; then Run. `read_line` gives each line,
+// or None at the end of the input.
+import std.io.{read_line}
+import std.env.{args}
+import std.strings.{parse_int}
+
+fn main() int {
+    argv := args()                       // the arguments after the program name
+    print("{argv.len()} argument(s)")
+    for i, arg in argv {
+        print("  arg {i}: {arg}")
+    }
+
+    lines := 0
+    bytes := 0
+    total: i64 = 0
+    numbers := 0
+    loop {
+        when read_line() {
+            Some(line) -> {
+                if line.starts_with("#") { continue }   // a comment line
+                lines += 1
+                bytes += line.len()
+                when parse_int(line.trim().as_str()) {
+                    Some(n) -> {
+                        total += n
+                        numbers += 1
+                    }
+                    null -> print("not a number: \"{line}\"")
+                }
+            }
+            null -> break
+        }
+    }
+    print("{lines} line(s), {bytes} byte(s)")
+    print("{numbers} number(s), sum {total}")
+    return 0
+}

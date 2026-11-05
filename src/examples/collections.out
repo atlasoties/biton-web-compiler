@@ -1,0 +1,21 @@
+sum 235, literal 15
+sorted: 17 33 42 55 88
+middle: 130, first and last 33 55
+first two: 17 33
+grid[2][1] = 7
+8 squares, last 64
+tail sums to 95, marks: 10 25 30 40
+alphabetical: apple banana fig pear
+shortest fig, longest banana
+apples: 4
+2 items, figs? false
+total: 235
+[0007]
+trimmed: [name = Ada Lovelace], '=' at 5
+split into 2: name -> Ada Lovelace
+name ADA LOVELACE, has true
+name_=_Ada_Lovelace
+  word: name
+  word: =
+  word: Ada
+  word: Lovelace

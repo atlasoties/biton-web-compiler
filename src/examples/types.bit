@@ -1,0 +1,86 @@
+// `type` declares structs, enums and unions; the body decides which.
+// `when` matches them. `extend` adds methods, and `extend Point: Show`
+// makes a type printable with `print` and in interpolated strings.
+
+type Point { x: int, y: int }
+
+extend Point {
+    fn length_squared(self) int {
+        return self.x * self.x + self.y * self.y
+    }
+
+    // `self` is a pointer to the receiver, so changes persist
+    fn shift(mut self, dx: int, dy: int) {
+        self.x += dx
+        self.y += dy
+    }
+}
+
+extend Point: Show {
+    fn show(self, out: *Text) { out.append("({self.x}, {self.y})") }
+}
+
+// A field may have a default, used when a struct value leaves it out
+type Config { name: string = "app", retries: int = 3 }
+
+// An enum: bare names, optionally with values
+type Severity { Low, Medium, High = 10 }
+
+fn label(s: Severity) string {
+    return when s {
+        Low -> "low",
+        Medium -> "medium",
+        High -> "high"
+    }
+}
+
+// A union: variants that carry a payload (or none)
+type Shape {
+    Circle(double),
+    Rect(Point),
+    Dot
+}
+
+fn area(s: Shape) double {
+    when s {
+        Circle(r) -> return 3.14159 * r * r
+        Rect(p) -> return (p.x * p.y) as double
+        Dot -> return 0.0
+    }
+}
+
+fn size(n: int) string {
+    when n {
+        1, 2, 3 -> return "small"
+        4, 5, 6 -> return "medium"
+        else -> return "large"
+    }
+}
+
+fn main() int {
+    p := Point(x: 3, y: 4)
+    print("p = {p}, |p|^2 = {p.length_squared()}")
+    p.shift(10, -1)
+    print("shifted: {p}")
+
+    origin: Point                       // zero-initialised
+    print("origin = {origin}")
+
+    c := Config(name: "web")
+    print("{c.name} retries {c.retries} times")
+
+    print("High is {label(Severity.High)} ({Severity.High as int})")
+    print("2 is {size(2)}, 42 is {size(42)}")
+
+    print("circle area: {area(Shape.Circle(2.0))}")
+    print("rect area:   {area(Shape.Rect(Point(x: 3, y: 5)))}")
+    print("dot area:    {area(Shape.Dot)}")
+
+    // Struct patterns, with `_` for any value
+    when origin {
+        Point(x: 0, y: 0) -> print("origin is at zero")
+        Point(x: 0, y: _) -> print("origin is on the y axis")
+        else -> print("origin moved")
+    }
+    return 0
+}

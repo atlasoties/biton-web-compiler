@@ -1,0 +1,52 @@
+// Functions are values. A lambda captures the variables it uses by
+// reference and lives in the function that made it. A lambda written where
+// it is returned or stored keeps its own copies of what it captures, on
+// the heap, as its state between calls.
+
+fn apply_twice(f: fn(int) int, x: int) int {
+    return f(f(x))
+}
+
+fn triple(x: int) int { return x * 3 }
+
+fn make_counter() fn() int {
+    count := 0
+    return fn() int { count += 1; return count }
+}
+
+fn make_adder(n: int) fn(int) int {
+    return fn(x: int) int { return x + n }
+}
+
+type Button { label: string, on_click: fn(int) int }
+
+// Named arguments and default parameter values
+fn describe(name: string, count: int = 1, loud: bool = false) {
+    print("{name} x{count}", end: "")
+    if loud { print(" (loudly!)") } else { print("") }
+}
+
+fn main() int {
+    print("apply_twice(triple, 2) = {apply_twice(triple, 2)}")
+    print("apply_twice(+5, 1)     = {apply_twice(fn(x: int) int { return x + 5 }, 1)}")
+
+    // capture by reference: the lambda sees and changes `total`
+    total := 0
+    add := fn(x: int) { total += x }
+    add(2)
+    add(40)
+    print("total = {total}")
+
+    next := make_counter()
+    next()
+    next()
+    print("counter = {next()}")
+
+    b := Button(label: "plus ten", on_click: make_adder(10))
+    print("{b.label}: {b.on_click(5)}")
+
+    describe("apples")
+    describe("pears", count: 3)
+    describe(name: "plums", loud: true, count: 2)
+    return 0
+}

@@ -9,9 +9,9 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 
-import type { HealthResponse } from "../shared/api.ts";
+import { MAX_ARG_BYTES, MAX_ARGS, type HealthResponse } from "../shared/api.ts";
 import { config } from "./config.ts";
-import { BadRequest, compilerVersion, runJob } from "./compiler.ts";
+import { BadRequest, compilerVersion, publicLimits, runJob } from "./compiler.ts";
 import { clientGone, gracefulShutdown, log, readJson, send, validateRequest } from "./http.ts";
 import { BusyError, CancelledError, initSandbox, slots } from "./sandbox.ts";
 
@@ -44,12 +44,7 @@ const server = createServer(async (req, res) => {
         ok: true,
         compilerVersion: version,
         sandbox: config.sandbox,
-        limits: {
-          runTimeoutMs: config.runTimeoutMs,
-          compileTimeoutMs: config.compileTimeoutMs,
-          maxOutputBytes: config.maxOutputBytes,
-          maxSourceBytes: config.maxSourceBytes,
-        },
+        limits: publicLimits(),
         load: { busy: slots.busy, queued: slots.queued, slots: config.maxConcurrent },
       };
       send(res, 200, body);
@@ -62,7 +57,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       const signal = clientGone(res);
-      const job = validateRequest(await readJson(req, config.maxSourceBytes + config.maxStdinBytes + 4096));
+      const job = validateRequest(await readJson(req, config.maxSourceBytes + config.maxStdinBytes + MAX_ARGS * (MAX_ARG_BYTES + 8) + 4096));
       const started = performance.now();
       const result = await runJob(job, signal);
       log({

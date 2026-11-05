@@ -1,0 +1,65 @@
+// Generic functions and types, and traits. A trait names methods a type
+// must have; `extend Type: Trait` provides them. A bound (`T: Ord`) is
+// checked at each call. Generics are compiled per type (monomorphised).
+
+trait Describe {
+    fn describe(self) Text
+}
+
+type Version { major: int, minor: int }
+
+extend Version: Ord {                  // Ord is in the prelude
+    fn cmp(self, other: *Version) int {
+        if self.major != other.major { return self.major - other.major }
+        return self.minor - other.minor
+    }
+}
+
+extend Version: Show {
+    fn show(self, out: *Text) { out.append("v{self.major}.{self.minor}") }
+}
+
+extend Version: Describe {
+    fn describe(self) Text { return "version {self.major}.{self.minor}" }
+}
+
+extend int: Describe {                 // builtin types take traits too
+    fn describe(self) Text { return "the number {self}" }
+}
+
+fn largest[T: Ord](a: T, b: T) T {
+    if a.cmp(&b) >= 0 { return a }
+    return b
+}
+
+fn announce[T: Describe + Show](x: T) {
+    print("{x} is {x.describe()}")
+}
+
+// A generic type with methods written once
+type Pair[A, B] { a: A, b: B }
+
+extend Pair[A, B] {
+    fn first(self) A { return self.a }
+    fn set_first(mut self, x: A) { self.a = x }
+}
+
+fn identity[T](x: T) T { return x }
+
+fn main() int {
+    print("largest(3, 9) = {largest(3, 9)}")
+    v := largest(Version(major: 1, minor: 9), Version(major: 2, minor: 1))
+    print("largest version = {v}")
+
+    announce(Version(major: 0, minor: 3))
+    announce(42)
+
+    p := Pair[int, double](a: 3, b: 0.5)
+    p.set_first(4)
+    print("pair: first = {p.first()}, second = {p.b}")
+
+    // explicit type arguments
+    big := identity[i64](9000000000)
+    print("identity[i64] = {big}")
+    return 0
+}

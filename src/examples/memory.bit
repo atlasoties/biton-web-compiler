@@ -1,0 +1,62 @@
+// Pointers, unsafe, defer and ownership. `&x` takes an address; `*p`
+// reads or writes through it, only inside `unsafe { }`. Struct values are
+// moved; a `drop` method runs when a value is destroyed. std.box puts a
+// value on the heap.
+import std.box.{Box, box}
+
+fn swap(a: *int, b: *int) {
+    unsafe {
+        tmp := *a
+        *a = *b
+        *b = tmp
+    }
+}
+
+fn countdown(n: int) {
+    defer print("liftoff!")             // runs when the function returns
+    for i in 0..n { print(n - i) }
+}
+
+type Noisy { id: int }
+
+extend Noisy {
+    fn drop(self) { print("dropping noisy #{self.id}") }
+}
+
+type Node { val: int, next: Box[Node]? }
+
+// `when &place` looks inside a union without moving it
+fn length(n: *Node) int {
+    when &n.next {
+        Some(b) -> return 1 + length(b.ptr())
+        null -> return 1
+    }
+}
+
+fn main() int {
+    x := 10
+    y := 20
+    swap(&x, &y)
+    print("after swap: x = {x}, y = {y}")
+
+    p: *int = &x
+    unsafe { *p += 5 }
+    print("through p: x = {x}")
+    print("size of i64: {sizeof(i64)} bytes")
+
+    countdown(3)
+
+    a := Noisy(id: 1)
+    {
+        b := Noisy(id: 2)
+        print("leaving the inner block")
+    }
+
+    // a linked list on the heap; every node is freed with `list`
+    list := Node(val: 1, next: null)
+    list = Node(val: 2, next: Option.Some(box(list)))
+    list = Node(val: 3, next: Option.Some(box(list)))
+    print("list length {length(&list)}, head {list.val}")
+    print("end of main")
+    return 0
+}

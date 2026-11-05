@@ -1,0 +1,85 @@
+// Arrays, slices, Vec (a growable list), Map (a hash map), sorting and
+// Text (owned, growable text). Indexing is bounds-checked.
+import std.vec.{Vec, vec}
+import std.map.{Map}
+import std.sort.{sort, sort_by, sort_slice}
+import std.text.{text, pad_left}
+
+// An array passes as a slice (`[]int`) of itself, so one function
+// takes arrays of any length
+fn sum(xs: []int) int {
+    s := 0
+    for x in xs { s += x }
+    return s
+}
+
+fn by_length(a: *Text, b: *Text) int { return a.len() - b.len() }
+
+fn main() int {
+    readings := [42, 17, 88, 33, 55]       // [5]int
+    print("sum {sum(readings)}, literal {sum([4, 5, 6])}")
+    sort_slice(readings)
+    print("sorted: {readings[0]} {readings[1]} {readings[2]} {readings[3]} {readings[4]}")
+
+    // A range slices: `a..b` stops before b, and `a..` or `..b` leave
+    // one side open
+    middle := readings[1..4]                // a view of 3 elements
+    print("middle: {sum(middle)}, first and last {middle[0]} {middle[2]}")
+    first_two := readings[..2]
+    print("first two: {first_two[0]} {first_two[1]}")
+
+    grid: [3][3]int                         // zero-initialised 2-D array
+    for r in 0..3 {
+        for c in 0..3 { grid[r][c] = r * 3 + c }
+    }
+    print("grid[2][1] = {grid[2][1]}")
+
+    // Vec owns its elements
+    squares := vec[int]()
+    for i in 1..9 { squares.push(i * i) }
+    print("{squares.len()} squares, last {squares.get(squares.len() - 1)}")
+
+    marks := [10, 20, 30, 40]
+    tail := marks[1..]                      // from index 1 to the end
+    tail[0] = 25                            // a view: marks[1] changes too
+    print("tail sums to {sum(tail)}, marks: {marks[0]} {marks[1]} {marks[2]} {marks[3]}")
+
+    words: Vec[Text]
+    words.push(text("pear"))
+    words.push(text("fig"))
+    words.push(text("banana"))
+    words.push(text("apple"))
+    sort(&words)
+    print("alphabetical: {words.at(0)} {words.at(1)} {words.at(2)} {words.at(3)}")
+    sort_by(&words, by_length)
+    print("shortest {words.at(0)}, longest {words.at(3)}")
+
+    // Map: get gives `V?`
+    stock: Map[string, int]
+    stock.set("apples", 3)
+    stock.set("pears", 5)
+    stock.set("apples", 4)
+    when stock.get("apples") {
+        Some(n) -> { print("apples: {n}") }
+        null -> print("no apples")
+    }
+    print("{stock.len()} items, figs? {stock.contains("figs")}")
+
+    // Text and formatting helpers
+    t: Text
+    t.push_str("total")
+    t.append(": {sum(readings)}")
+    print(t)
+    print("[{pad_left(7, 4, '0')}]")
+
+    // Text can be searched, trimmed, split and cut
+    line := text("  name = Ada Lovelace  ").trim()
+    print("trimmed: [{line}], '=' at {line.find("=") ?? -1}")
+    parts := line.split(" = ")
+    print("split into {parts.len()}: {parts.at(0)} -> {parts.at(1)}")
+    name := line[(line.find("=") ?? 0) + 2..]
+    print("name {name.to_upper()}, has {name.contains("Love")}")
+    print(line.replace(" ", "_"))
+    for word in line.words() { print("  word: {word}") }
+    return 0
+}

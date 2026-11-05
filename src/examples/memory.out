@@ -1,0 +1,12 @@
+after swap: x = 20, y = 10
+through p: x = 25
+size of i64: 8 bytes
+3
+2
+1
+liftoff!
+leaving the inner block
+dropping noisy #2
+list length 3, head 3
+end of main
+dropping noisy #1

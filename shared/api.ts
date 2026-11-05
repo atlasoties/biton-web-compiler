@@ -2,7 +2,8 @@
 // Keep this file free of runtime imports so both sides can load it.
 
 /** What the server should do with the source. */
-export type CompileMode = "run" | "check" | "emit";
+export const COMPILE_MODES = ["run", "check", "emit", "format"] as const;
+export type CompileMode = (typeof COMPILE_MODES)[number];
 
 /** Intermediate outputs the real `biton --emit` flag can print. */
 export const EMIT_KINDS = ["tokens", "ast", "hir", "typed-hir", "mir", "ir"] as const;
@@ -20,7 +21,15 @@ export interface CompileRequest {
   opt?: OptLevel;
   /** Text fed to the program's standard input ("run" only). */
   stdin?: string;
+  /** Arguments passed to the program, after its name ("run" only; see std.env). */
+  args?: string[];
+  /** Additional files to compile (multi-file support). */
+  files?: Record<string, string>;
 }
+
+/** Limits on `args` (also enforced by the server). */
+export const MAX_ARGS = 64;
+export const MAX_ARG_BYTES = 1024;
 
 export type Severity = "error" | "warning" | "note" | "help" | "fatal";
 
@@ -57,6 +66,8 @@ export interface CompileResponse {
   cached?: boolean;
   /** Output of `--emit <kind>`. */
   emitted?: string;
+  /** The source as `biton fmt` formatted it ("format" only; unchanged when it does not parse). */
+  formatted?: string;
   /** Present when the program was run. */
   run?: RunResult;
 }
@@ -78,9 +89,36 @@ export interface HealthResponse {
   compilerVersion: string;
   /** "uid": each job runs as its own user in the worker container; "none": development. */
   sandbox: "uid" | "none";
-  limits: { runTimeoutMs: number; compileTimeoutMs: number; maxOutputBytes: number; maxSourceBytes: number };
+  limits: {
+    runTimeoutMs: number;
+    compileTimeoutMs: number;
+    maxOutputBytes: number;
+    maxSourceBytes: number;
+    maxStdinBytes: number;
+  };
 }
 
 export interface ErrorResponse {
   error: string;
 }
+
+/** A signed-in user (the API knows nothing else about them). */
+export interface AuthUser {
+  /** Opaque, stable id derived from the email address. */
+  id: string;
+  email: string;
+  name: string;
+  provider: "google" | "email";
+}
+
+/** GET /api/auth/session */
+export interface AuthStatus {
+  user: AuthUser | null;
+  /** The sign-in methods this deployment offers. */
+  providers: { google: boolean; email: boolean };
+  /** Running programs needs a signed-in user. */
+  requireForRun: boolean;
+}
+
+/** `code` of the HTTP 401 the API answers a run with when no one is signed in. */
+export const SIGNIN_REQUIRED = "signin_required";

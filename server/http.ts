@@ -2,7 +2,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { EMIT_KINDS, OPT_LEVELS, type CompileRequest } from "../shared/api.ts";
+import { COMPILE_MODES, EMIT_KINDS, MAX_ARG_BYTES, MAX_ARGS, OPT_LEVELS, type CompileRequest } from "../shared/api.ts";
 import { BadRequest } from "./compiler.ts";
 
 export function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -47,9 +47,9 @@ export function validateRequest(body: unknown): CompileRequest {
   if (!body || typeof body !== "object") throw new BadRequest("expected a JSON object");
   const b = body as Record<string, unknown>;
   if (typeof b.code !== "string") throw new BadRequest("`code` must be a string");
-  const mode = b.mode ?? "run";
-  if (mode !== "run" && mode !== "check" && mode !== "emit") {
-    throw new BadRequest("`mode` must be run, check or emit");
+  const mode = (b.mode ?? "run") as CompileRequest["mode"];
+  if (!COMPILE_MODES.includes(mode)) {
+    throw new BadRequest(`\`mode\` must be one of ${COMPILE_MODES.join(", ")}`);
   }
   if (mode === "emit" && !EMIT_KINDS.includes(b.emit as never)) {
     throw new BadRequest(`\`emit\` must be one of ${EMIT_KINDS.join(", ")}`);
@@ -58,12 +58,23 @@ export function validateRequest(body: unknown): CompileRequest {
     throw new BadRequest(`\`opt\` must be one of ${OPT_LEVELS.join(", ")}`);
   }
   if (b.stdin !== undefined && typeof b.stdin !== "string") throw new BadRequest("`stdin` must be a string");
+  if (b.args !== undefined) {
+    if (!Array.isArray(b.args) || !b.args.every((a) => typeof a === "string")) {
+      throw new BadRequest("`args` must be an array of strings");
+    }
+    if (b.args.length > MAX_ARGS) throw new BadRequest(`at most ${MAX_ARGS} arguments`);
+    for (const a of b.args as string[]) {
+      if (a.includes("\0")) throw new BadRequest("an argument cannot contain a NUL character");
+      if (Buffer.byteLength(a, "utf8") > MAX_ARG_BYTES) throw new BadRequest(`an argument is longer than ${MAX_ARG_BYTES} bytes`);
+    }
+  }
   return {
     code: b.code,
     mode,
     emit: mode === "emit" ? (b.emit as CompileRequest["emit"]) : undefined,
     opt: b.opt as CompileRequest["opt"],
     stdin: mode === "run" ? (b.stdin as string | undefined) : undefined,
+    args: mode === "run" && (b.args as string[] | undefined)?.length ? (b.args as string[]) : undefined,
   };
 }
 

@@ -1,277 +1,491 @@
-import { useState } from "react";
-import { BookOpen, Download, FileCode, Library, Upload } from "lucide-react";
+import { useMemo, useState } from "react";
+import { BookOpen, Download, FileCode2, Files, FolderPlus, Library, Plus, Search, Trash2, Upload, X, Copy, Edit2, Folder } from "lucide-react";
 
-import type { Demo } from "../../demos";
+import type { Example } from "../../examples";
 import { highlight } from "../../lib/highlight";
+import { REFERENCE, STDLIB } from "../../reference";
+import { ConfirmDialog, PromptDialog } from "../Dialog";
+import { IconButton, SectionTitle, cx } from "../ui";
 
-type Tab = "examples" | "reference" | "stdlib";
+export type SidePanel = "files" | "language" | "stdlib";
+
+const PANELS: Array<{ key: SidePanel; label: string; Icon: typeof Files }> = [
+  { key: "files", label: "Files & examples", Icon: Files },
+  { key: "language", label: "Language reference", Icon: BookOpen },
+  { key: "stdlib", label: "Standard library", Icon: Library },
+];
+
+/** The thin vertical bar of panel icons on the far left. */
+export function ActivityRail({ active, setActive }: { active: SidePanel | null; setActive: (p: SidePanel | null) => void }) {
+  return (
+    <nav className="w-12 shrink-0 flex flex-col items-center gap-1 py-2 border-r border-line bg-surface" aria-label="Panels">
+      {PANELS.map(({ key, label, Icon }) => (
+        <button
+          key={key}
+          onClick={() => setActive(active === key ? null : key)}
+          aria-label={label}
+          title={label}
+          aria-pressed={active === key}
+          className={cx(
+            "relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors",
+            active === key ? "text-fg bg-active" : "text-faint hover:text-fg hover:bg-hover",
+          )}
+        >
+          {active === key && <span className="absolute -left-[7px] top-2 bottom-2 w-[2px] rounded-full bg-accent" />}
+          <Icon className="w-[18px] h-[18px]" strokeWidth={1.75} />
+        </button>
+      ))}
+    </nav>
+  );
+}
 
 interface SidebarProps {
-  demos: Record<string, Demo>;
-  loadDemo: (key: string) => void;
+  panel: SidePanel;
+  close: () => void;
+  examples: Example[];
+  currentExample: string | null;
+  loadExample: (key: string) => void;
   downloadCode: () => void;
   uploadCode: (name: string, text: string) => void;
+  fileName: string;
+  modified: boolean;
+  files?: Record<string, string>;
+  activeFile?: string;
+  onFileSelect?: (name: string) => void;
+  onCreateFile?: (name: string) => void;
+  onCreateFolder?: (name: string) => void;
+  onDeleteFile?: (name: string) => void;
+  onRenameFile?: (oldName: string, newName: string) => void;
+  onCopyFile?: (name: string, newName: string) => void;
 }
 
-// Language reference, following ../biton/README.md and grammar/biton.bnf.
-const REFERENCE: Array<{ title: string; items: Array<{ code: string; note?: string }> }> = [
-  {
-    title: "Variables",
-    items: [
-      { code: "def x: int = 10;", note: "mutable, explicit type" },
-      { code: "def pi = 3.14159;", note: "inferred (double)" },
-      { code: "fix LIMIT: int = 100;", note: "immutable" },
-      { code: "def p: Point;", note: "zero-initialised" },
-    ],
-  },
-  {
-    title: "Functions",
-    items: [
-      { code: "def add(a: int, b: int) => int {\n    give a + b;\n}", note: "give returns a value" },
-      { code: "def log(msg: string) { }", note: "no return type" },
-      { code: "def main() => int { give 0; }", note: "exit code of the program" },
-      { code: "draw(x: 10, y: 20);", note: "named arguments" },
-    ],
-  },
-  {
-    title: "Control flow",
-    items: [
-      { code: "if x > 0 { } elif x < 0 { } else { }" },
-      { code: "while i < 10 { i += 1; }" },
-      { code: "for (def i: int = 0; i < n; i += 1) { }" },
-      { code: "loop { exit; }", note: "exit/break, redo/continue" },
-      { code: "outer: while true { break outer; }", note: "labelled loops" },
-      { code: "when x {\n    1, 2, 3 -> give \"small\";\n    4..9    -> give \"medium\";\n    else    -> give \"large\";\n}" },
-    ],
-  },
-  {
-    title: "Types",
-    items: [
-      { code: "int  i8 i16 i32 i64  u8 u16 u32 u64", note: "int is 32-bit signed" },
-      { code: "double  float  bool  char  string  any" },
-      { code: "~int", note: "pointer" },
-      { code: "int[10]  int[3][4]  int[]", note: "array, 2-D array, slice" },
-      { code: "(int, bool)", note: "tuple; (a, b) = t;" },
-      { code: "(int) -> int", note: "function type" },
-      { code: "x as i64", note: "cast" },
-    ],
-  },
-  {
-    title: "Kinds, enums & unions",
-    items: [
-      { code: "kind Point { x: int, y: int };" },
-      { code: "def q = Point { x: 1, y: 2 };" },
-      { code: "impl Point {\n    def len2(self) => int {\n        give self.x * self.x + self.y * self.y;\n    }\n};", note: "self is a pointer to the receiver" },
-      { code: "enum Color { Red, Green = 5, Blue };" },
-      { code: "union Shape { Circle: double, Box: Rect };" },
-      { code: "Shape::Circle as r -> give r * r;", note: "when arm with binding" },
-      { code: "~>copy kind V { x: int };", note: "copied instead of moved" },
-    ],
-  },
-  {
-    title: "Generics & lambdas",
-    items: [
-      { code: "def id[T](x: T) => T { give x; }" },
-      { code: "id<i64>(5)", note: "explicit type argument" },
-      { code: "kind Cell[T] { value: T };", note: "Cell<int> { value: 3 }" },
-      { code: "def f = |x: int| => int { give x * 2; };", note: "captures by value" },
-    ],
-  },
-  {
-    title: "Pointers, unsafe & defer",
-    items: [
-      { code: "def p: ~int = ref x;", note: "address-of" },
-      { code: "unsafe { p~ = 99; }", note: "dereference only in unsafe" },
-      { code: "unsafe { def y = p[2]; }", note: "pointer indexing" },
-      { code: "defer x = 100;", note: "runs on scope exit, LIFO" },
-      { code: "sizeof(int)  alignof(i64)  lengthof(xs)" },
-    ],
-  },
-  {
-    title: "Modules",
-    items: [
-      { code: "import std;", note: "then std::println_str(...)" },
-      { code: "import std::{println_str, println_int};" },
-      { code: "import std::math as m;" },
-      { code: "pub def area() => int { give 0; }", note: "exported" },
-      { code: "// line   /* nestable block */" },
-    ],
-  },
-];
-
-// Mirrors ../biton/lib/*.bit.
-const STDLIB: Array<{ module: string; import: string; items: string[] }> = [
-  {
-    module: "std",
-    import: "import std::{println_str, println_int};",
-    items: [
-      "print_str(s: string)",
-      "println_str(s: string)",
-      "print_int(v: int)",
-      "println_int(v: int)",
-      "print_bool(b: bool)",
-      "println()",
-    ],
-  },
-  {
-    module: "std::math",
-    import: "import std::math::{max, min};",
-    items: [
-      "abs(x: int) => int",
-      "max(a: int, b: int) => int",
-      "min(a: int, b: int) => int",
-      "clamp(x: int, lo: int, hi: int) => int",
-      "pow(base: int, exp: int) => int",
-      "gcd(a: int, b: int) => int",
-    ],
-  },
-  {
-    module: "std::strings",
-    import: "import std::strings::{length};",
-    items: [
-      "length(s: string) => int",
-      "is_empty(s: string) => bool",
-      "byte_at(s: string, i: int) => int",
-      "starts_with(s: string, prefix: string) => bool",
-    ],
-  },
-  {
-    module: "std::collections",
-    import: "import std::collections::{Buf, buf_push};",
-    items: ["kind Buf[T]   // capacity 16", "buf_push(b: ~Buf<T>, v: T) => bool", "buf_get(b: ~Buf<T>, i: int) => T", "buf_len(b: ~Buf<T>) => int"],
-  },
-  {
-    module: "std::box",
-    import: "import std::box::{Box, box, unbox};",
-    items: ["kind Box[T]   // owned heap value", "box(v: T) => Box<T>", "unbox(b: Box<T>) => T", "b.ptr() => ~T", "b.set(v: T)"],
-  },
-  {
-    module: "std::mem",
-    import: "import std::mem::{alloc, release};",
-    items: ["alloc[T]() => ~T   // alloc<int>()", "release(p: ~T)", "replace(dst: ~T, v: T) => T"],
-  },
-];
-
-function Code({ src }: { src: string }) {
-  return <pre className="font-mono text-[11px] leading-6 whitespace-pre-wrap break-words">{highlight(src)}</pre>;
+function Snippet({ src }: { src: string }) {
+  return <pre className="font-mono text-[11.5px] leading-[1.6] whitespace-pre-wrap break-words text-fg">{highlight(src)}</pre>;
 }
 
-export default function Sidebar({ demos, loadDemo, downloadCode, uploadCode }: SidebarProps) {
-  const [tab, setTab] = useState<Tab>("examples");
-  const tabs: Array<[Tab, string]> = [
-    ["examples", "Examples"],
-    ["reference", "Language"],
-    ["stdlib", "Stdlib"],
-  ];
+function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
+  return (
+    <div className="px-3 pt-3">
+      <label className="flex items-center gap-2 h-8 px-2.5 rounded-md border border-line bg-surface-2 focus-within:border-accent text-faint">
+        <Search className="w-3.5 h-3.5 shrink-0" />
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="flex-1 min-w-0 bg-transparent outline-none text-[12.5px] text-fg placeholder:text-faint"
+          spellCheck={false}
+        />
+        {value && (
+          <button onClick={() => onChange("")} aria-label="Clear search" className="hover:text-fg">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </label>
+    </div>
+  );
+}
+
+const matches = (q: string, ...texts: Array<string | undefined>) => {
+  const s = q.trim().toLowerCase();
+  return !s || texts.some((t) => t?.toLowerCase().includes(s));
+};
+
+type FileDialog =
+  | { kind: "new-file"; initialValue: string }
+  | { kind: "new-folder"; initialValue: string }
+  | { kind: "rename"; name: string }
+  | { kind: "copy"; name: string }
+  | { kind: "delete"; name: string };
+
+/** Folder entries are stored under keys ending in "/". */
+const isFolderName = (name: string) => name.endsWith("/");
+
+/** Normalise a typed path: forward slashes, no leading "./" or "/". */
+const cleanPath = (raw: string) =>
+  raw
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/{2,}/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/^\.\//, "");
+
+/** Validate the path part of a file or folder name. */
+const pathError = (path: string, kind: "file" | "folder") => {
+  if (!path) return kind === "file" ? "Enter a file name." : "Enter a folder name.";
+  const parts = path.split("/");
+  if (parts.some((part) => part === "." || part === "..")) return "Use a name like src/main.bit.";
+  if (parts.some((part) => /[<>:"|?*\u0000]/.test(part))) return "That name contains characters that aren't allowed.";
+  return null;
+};
+
+const withBitExtension = (path: string) => (/\.bit$/i.test(path) ? path : `${path}.bit`);
+
+/** Keep the original extension when a renamed/copied path omits one. */
+const withSameExtension = (path: string, original: string) => {
+  const base = original.slice(folderOf(original).length);
+  const dot = base.lastIndexOf(".");
+  const extension = dot > 0 ? base.slice(dot) : "";
+  return extension && !/\.[^./]+$/.test(path) ? `${path}${extension}` : path;
+};
+
+/** "src/main.bit" -> "src/main_copy.bit" */
+const copyName = (name: string) => {
+  const dir = folderOf(name);
+  const base = name.slice(dir.length);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? `${dir}${base.slice(0, dot)}_copy${base.slice(dot)}` : `${dir}${base}_copy`;
+};
+
+/** The directory part of a file path, with its trailing slash. */
+const folderOf = (path: string) => {
+  const slash = path.lastIndexOf("/");
+  return slash === -1 ? "" : path.slice(0, slash + 1);
+};
+
+const withoutTrailingSlash = (path: string) => path.replace(/\/+$/, "");
+
+/** A bare file name keeps the folder of the file it was derived from. */
+const inOriginalFolder = (path: string, original: string) => {
+  const folder = folderOf(original);
+  return folder && !path.includes("/") ? `${folder}${path}` : path;
+};
+
+export default function Sidebar(p: SidebarProps) {
+  const [query, setQuery] = useState("");
+  const [fileDialog, setFileDialog] = useState<FileDialog | null>(null);
+  const title = PANELS.find((x) => x.key === p.panel)!.label;
+
+  const allFiles = p.files ?? {};
+  const hasEntry = (name: string) => Object.prototype.hasOwnProperty.call(allFiles, name);
+  /** New entries go next to the active item by default. */
+  const defaultDir = p.activeFile ? (isFolderName(p.activeFile) ? p.activeFile : folderOf(p.activeFile)) : "";
+
+  const newFileProblem = (raw: string) => {
+    const cleaned = cleanPath(raw);
+    if (cleaned.endsWith("/")) return "Enter a file name.";
+    const path = withoutTrailingSlash(cleaned);
+    const problem = pathError(path, "file");
+    if (problem) return problem;
+    const name = withBitExtension(path);
+    return hasEntry(name) ? `“${name}” already exists.` : null;
+  };
+
+  const newFolderProblem = (raw: string) => {
+    const path = withoutTrailingSlash(cleanPath(raw));
+    const problem = pathError(path, "folder");
+    if (problem) return problem;
+    const name = `${path}/`;
+    const exists = Object.keys(allFiles).some((key) => key === name || key.startsWith(name));
+    return exists ? `“${path}” already exists.` : null;
+  };
+
+  const renameProblem = (original: string, raw: string) => {
+    const isFolder = isFolderName(original);
+    const basePath = withoutTrailingSlash(cleanPath(raw));
+    const path = isFolder ? basePath : inOriginalFolder(basePath, original);
+    const problem = pathError(path, isFolder ? "folder" : "file");
+    if (problem) return problem;
+    const name = isFolder ? `${path}/` : withSameExtension(path, original);
+    if (name === original) return null;
+    if (hasEntry(name)) return `“${name}” already exists.`;
+    if (isFolder) {
+      if (name.startsWith(original)) return "A folder can't be moved inside itself.";
+      if (Object.keys(allFiles).some((key) => key !== original && key.startsWith(name))) return `“${path}” already exists.`;
+    }
+    return null;
+  };
+
+  const copyProblem = (original: string, raw: string) => {
+    const path = inOriginalFolder(withoutTrailingSlash(cleanPath(raw)), original);
+    const problem = pathError(path, "file");
+    if (problem) return problem;
+    const name = withSameExtension(path, original);
+    return hasEntry(name) ? `“${name}” already exists.` : null;
+  };
+
+  const createNewFile = (raw: string) => {
+    p.onCreateFile?.(withBitExtension(withoutTrailingSlash(cleanPath(raw))));
+    setFileDialog(null);
+  };
+
+  const createNewFolder = (raw: string) => {
+    p.onCreateFolder?.(withoutTrailingSlash(cleanPath(raw)));
+    setFileDialog(null);
+  };
+
+  const renameTo = (original: string, raw: string) => {
+    const isFolder = isFolderName(original);
+    const basePath = withoutTrailingSlash(cleanPath(raw));
+    const path = isFolder ? basePath : inOriginalFolder(basePath, original);
+    const newName = isFolder ? `${path}/` : withSameExtension(path, original);
+    setFileDialog(null);
+    if (newName !== original) p.onRenameFile?.(original, newName);
+  };
+
+  const copyTo = (original: string, raw: string) => {
+    const path = inOriginalFolder(withoutTrailingSlash(cleanPath(raw)), original);
+    p.onCopyFile?.(original, withSameExtension(path, original));
+    setFileDialog(null);
+  };
+
+  const deleteFile = (name: string) => {
+    p.onDeleteFile?.(name);
+    setFileDialog(null);
+  };
+
+  const reference = useMemo(
+    () =>
+      REFERENCE.map((s) => ({ ...s, items: matches(query, s.title) ? s.items : s.items.filter((i) => matches(query, i.code, i.note)) })).filter(
+        (s) => s.items.length > 0,
+      ),
+    [query],
+  );
+  const stdlib = useMemo(
+    () =>
+      STDLIB.map((m) => ({ ...m, items: matches(query, m.module) ? m.items : m.items.filter((i) => matches(query, i)) })).filter((m) => m.items.length > 0),
+    [query],
+  );
 
   return (
-    <aside className="w-72 bg-[#051139] border-r border-[#6d5f50]/40 flex flex-col shrink-0">
-      <div className="flex border-b border-[#6d5f50]/35 p-1 bg-[#0c122a] gap-1 shrink-0">
-        {tabs.map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex-1 py-1.5 rounded text-[11px] font-bold uppercase tracking-wider text-center transition-all ${
-              tab === key ? "bg-[#051139] text-[#fec153] border-b-2 border-[#fec153]" : "text-[#fcd389]/60 hover:text-[#fcd389]"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+    <aside className="w-72 max-w-[85vw] h-full flex flex-col bg-surface border-r border-line" aria-label={title}>
+      <div className="h-10 shrink-0 flex items-center justify-between pl-3 pr-1.5 border-b border-line">
+        <span className="text-[12px] font-semibold uppercase tracking-[0.06em] text-muted">{title}</span>
+        <IconButton label="Close panel" size="sm" onClick={p.close}>
+          <X className="w-3.5 h-3.5" />
+        </IconButton>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 scrollbar-thin">
-        {tab === "examples" && (
-          <div className="space-y-4">
-            <nav className="space-y-1">
-              {Object.entries(demos).map(([key, item]) => (
-                <button
-                  key={key}
-                  onClick={() => loadDemo(key)}
-                  className="w-full text-left p-2 rounded transition-all group hover:bg-[#0c122a] flex items-start gap-2.5 border border-transparent hover:border-[#6d5f50]/40"
-                >
-                  <FileCode className="w-4 h-4 text-[#fec153] mt-0.5 shrink-0" />
-                  <div>
-                    <div className="text-xs font-semibold text-white group-hover:text-[#ffa500] transition-colors">{item.title}</div>
-                    <div className="text-[10px] text-[#fcd389]/60 leading-tight mt-0.5">{item.desc}</div>
+      <div className="flex-1 overflow-y-auto pb-6">
+        {p.panel === "files" && (
+          <>
+            <SectionTitle
+              right={
+                <div className="flex items-center gap-0.5">
+                  <IconButton label="New file" size="sm" onClick={() => setFileDialog({ kind: "new-file", initialValue: defaultDir })}>
+                    <Plus className="w-3.5 h-3.5" />
+                  </IconButton>
+                  <IconButton label="New folder" size="sm" onClick={() => setFileDialog({ kind: "new-folder", initialValue: defaultDir })}>
+                    <FolderPlus className="w-3.5 h-3.5" />
+                  </IconButton>
+                  <IconButton label="Download current file" size="sm" onClick={p.downloadCode}>
+                    <Download className="w-3.5 h-3.5" />
+                  </IconButton>
+                  <label title="Open a .bit file" className="w-6 h-6 inline-flex items-center justify-center rounded-md text-muted hover:text-fg hover:bg-hover cursor-pointer">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span className="sr-only">Open a .bit file</span>
+                    <input
+                      type="file"
+                      accept=".bit,text/plain"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (file) file.text().then((text) => p.uploadCode(file.name, text));
+                      }}
+                    />
+                  </label>
+                </div>
+              }
+            >
+              Files
+            </SectionTitle>
+            <div className="px-1.5 space-y-px">
+              {Object.keys(allFiles).sort().map((fname) => {
+                const isFolder = isFolderName(fname) || Object.keys(allFiles).some((k) => k !== fname && k.startsWith(fname + "/"));
+                const isActive = !isFolder && p.activeFile === fname;
+                return (
+                  <div key={fname} className="group flex items-center gap-1">
+                    <button
+                      onClick={() => !isFolder && p.onFileSelect?.(fname)}
+                      className={cx(
+                        "flex-1 text-left px-2 py-1.5 rounded-md transition-colors flex items-center gap-2",
+                        isActive ? "bg-active" : "hover:bg-hover",
+                        isFolder && "cursor-default",
+                      )}
+                    >
+                      {isFolder ? <Folder className="w-3.5 h-3.5 text-faint shrink-0" /> : <FileCode2 className="w-3.5 h-3.5 text-faint group-hover:text-accent shrink-0" />}
+                      <span className="text-[12.5px] text-fg truncate">{fname}</span>
+                    </button>
+                    <div className="hidden group-hover:flex items-center gap-0.5">
+                      {isFolder ? (
+                        <IconButton label="New file in folder" size="sm" onClick={() => setFileDialog({ kind: "new-file", initialValue: fname })}>
+                          <Plus className="w-3 h-3" />
+                        </IconButton>
+                      ) : (
+                        <IconButton label="Copy" size="sm" onClick={() => setFileDialog({ kind: "copy", name: fname })}>
+                          <Copy className="w-3 h-3" />
+                        </IconButton>
+                      )}
+                      <IconButton label="Rename" size="sm" onClick={() => setFileDialog({ kind: "rename", name: fname })}>
+                        <Edit2 className="w-3 h-3" />
+                      </IconButton>
+                      <IconButton label="Delete" size="sm" onClick={() => setFileDialog({ kind: "delete", name: fname })}>
+                        <Trash2 className="w-3 h-3" />
+                      </IconButton>
+                    </div>
                   </div>
+                );
+              })}
+              {Object.keys(allFiles).length === 0 && (
+                <div className="px-2 py-1.5 text-[11.5px] text-faint">No files</div>
+              )}
+            </div>
+            <p className="px-3 pt-2 text-[11.5px] leading-relaxed text-faint">
+              Multi-file project support. Kept in this browser.
+            </p>
+
+            <SectionTitle>Examples</SectionTitle>
+            <div className="px-1.5 space-y-px">
+              {p.examples.map((ex) => (
+                <button
+                  key={ex.key}
+                  onClick={() => p.loadExample(ex.key)}
+                  className={cx(
+                    "w-full text-left px-2 py-2 rounded-md transition-colors group",
+                    p.currentExample === ex.key ? "bg-active" : "hover:bg-hover",
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <FileCode2 className="w-3.5 h-3.5 text-faint group-hover:text-accent shrink-0" />
+                    <span className="text-[13px] font-medium text-fg truncate">{ex.title}</span>
+                  </div>
+                  <div className="pl-[22px] text-[11.5px] leading-snug text-faint mt-0.5">{ex.desc}</div>
                 </button>
               ))}
-            </nav>
-
-            <div className="pt-3 border-t border-[#6d5f50]/30">
-              <div className="text-[10px] font-extrabold text-[#fcd389]/50 uppercase tracking-widest mb-2 px-1">File</div>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={downloadCode}
-                  className="flex items-center justify-center gap-1 py-1.5 px-2 bg-[#0c122a] text-[#fcd389]/85 hover:text-white rounded border border-[#6d5f50]/40 text-[10px] font-bold transition-all hover:border-[#ffa500]"
-                >
-                  <Download className="w-3 h-3" />
-                  Download
-                </button>
-                <label className="flex items-center justify-center gap-1 py-1.5 px-2 bg-[#0c122a] text-[#fcd389]/85 hover:text-white rounded border border-[#6d5f50]/40 text-[10px] font-bold cursor-pointer transition-all hover:border-[#ffa500]">
-                  <Upload className="w-3 h-3" />
-                  Open .bit
-                  <input
-                    type="file"
-                    accept=".bit,text/plain"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      e.target.value = "";
-                      if (!file) return;
-                      file.text().then((text) => uploadCode(file.name, text));
-                    }}
-                  />
-                </label>
-              </div>
-              <p className="text-[10px] text-[#fcd389]/45 mt-2 px-1 leading-relaxed">
-                The editor holds one module. Imports of your own modules are not available here; the standard library is.
-              </p>
             </div>
-          </div>
+          </>
         )}
 
-        {tab === "reference" && (
-          <div className="space-y-4">
-            {REFERENCE.map((section) => (
+        {p.panel === "language" && (
+          <>
+            <SearchBox value={query} onChange={setQuery} placeholder="Search the language…" />
+            {reference.map((section) => (
               <div key={section.title}>
-                <div className="text-[10px] font-bold text-[#fcd389]/50 uppercase tracking-widest mb-2 px-1 flex items-center gap-1.5">
-                  <BookOpen className="w-3 h-3" />
-                  {section.title}
-                </div>
-                <div className="space-y-1.5">
+                <SectionTitle>{section.title}</SectionTitle>
+                <div className="px-3 space-y-1.5">
                   {section.items.map((item, i) => (
-                    <div key={i} className="bg-[#0c122a] px-2 py-1 rounded border border-[#6d5f50]/20">
-                      <Code src={item.code} />
-                      {item.note && <div className="text-[10px] text-[#fcd389]/50 leading-tight pb-0.5">{item.note}</div>}
+                    <div key={i} className="rounded-md border border-line bg-surface-2 px-2.5 py-1.5">
+                      <Snippet src={item.code} />
+                      {item.note && <div className="text-[11px] text-faint leading-snug mt-0.5">{item.note}</div>}
                     </div>
                   ))}
                 </div>
               </div>
             ))}
-          </div>
+            {reference.length === 0 && <p className="px-3 pt-4 text-[12.5px] text-faint">Nothing matches “{query}”.</p>}
+          </>
         )}
 
-        {tab === "stdlib" && (
-          <div className="space-y-4">
-            {STDLIB.map((m) => (
+        {p.panel === "stdlib" && (
+          <>
+            <SearchBox value={query} onChange={setQuery} placeholder="Search the standard library…" />
+            {stdlib.map((m) => (
               <div key={m.module}>
-                <div className="text-[10px] font-bold text-[#fec153] uppercase tracking-widest mb-1.5 px-1 flex items-center gap-1.5 font-mono">
-                  <Library className="w-3 h-3" />
-                  {m.module}
-                </div>
-                <div className="bg-[#0c122a] px-2 py-1 rounded border border-[#6d5f50]/20 mb-1.5">
-                  <Code src={m.import} />
-                </div>
-                <div className="bg-[#0c122a] px-2 py-1 rounded border border-[#6d5f50]/20">
-                  <Code src={m.items.join("\n")} />
+                <SectionTitle>
+                  <span className="font-mono normal-case tracking-normal text-[12px] text-fg">{m.module}</span>
+                </SectionTitle>
+                <div className="px-3 space-y-1.5">
+                  <div className="rounded-md border border-line bg-surface-2 px-2.5 py-1.5">
+                    <Snippet src={m.import} />
+                  </div>
+                  <div className="rounded-md border border-line px-2.5 py-1.5">
+                    <Snippet src={m.items.join("\n")} />
+                  </div>
                 </div>
               </div>
             ))}
-          </div>
+            {stdlib.length === 0 && <p className="px-3 pt-4 text-[12.5px] text-faint">Nothing matches “{query}”.</p>}
+          </>
         )}
       </div>
+
+      {fileDialog?.kind === "new-file" && (
+        <PromptDialog
+          title="New file"
+          description={
+            <>
+              Create a file in this browser. Use a path like <span className="font-mono text-fg">src/main.bit</span> to put it in a folder.
+            </>
+          }
+          label="File name"
+          initialValue={fileDialog.initialValue}
+          placeholder="main.bit"
+          confirmLabel="Create file"
+          validate={newFileProblem}
+          onConfirm={createNewFile}
+          onClose={() => setFileDialog(null)}
+        />
+      )}
+
+      {fileDialog?.kind === "new-folder" && (
+        <PromptDialog
+          title="New folder"
+          description={
+            <>
+              Group related files together. Use a path like <span className="font-mono text-fg">src/lib</span> to nest folders.
+            </>
+          }
+          label="Folder name"
+          initialValue={fileDialog.initialValue}
+          placeholder="src"
+          confirmLabel="Create folder"
+          validate={newFolderProblem}
+          onConfirm={createNewFolder}
+          onClose={() => setFileDialog(null)}
+        />
+      )}
+
+      {fileDialog?.kind === "rename" && (
+        <PromptDialog
+          title={isFolderName(fileDialog.name) ? "Rename folder" : "Rename file"}
+          description={
+            <>
+              Renaming <span className="font-mono text-fg">{fileDialog.name}</span>. The change is kept in this browser.
+            </>
+          }
+          label="New name"
+          initialValue={isFolderName(fileDialog.name) ? withoutTrailingSlash(fileDialog.name) : fileDialog.name}
+          confirmLabel="Rename"
+          validate={(value) => renameProblem(fileDialog.name, value)}
+          onConfirm={(value) => renameTo(fileDialog.name, value)}
+          onClose={() => setFileDialog(null)}
+          selectBasename={!isFolderName(fileDialog.name)}
+        />
+      )}
+
+      {fileDialog?.kind === "copy" && (
+        <PromptDialog
+          title="Copy file"
+          description={
+            <>
+              Make a copy of <span className="font-mono text-fg">{fileDialog.name}</span>.
+            </>
+          }
+          label="Copy as"
+          initialValue={copyName(fileDialog.name)}
+          confirmLabel="Copy"
+          validate={(value) => copyProblem(fileDialog.name, value)}
+          onConfirm={(value) => copyTo(fileDialog.name, value)}
+          onClose={() => setFileDialog(null)}
+          selectBasename
+        />
+      )}
+
+      {fileDialog?.kind === "delete" && (
+        <ConfirmDialog
+          title={isFolderName(fileDialog.name) ? "Delete folder?" : "Delete file?"}
+          description={
+            <>
+              <span className="font-mono text-fg">{fileDialog.name}</span> will be removed from this browser
+              {isFolderName(fileDialog.name) ? ", including everything inside it" : ""}. This can't be undone.
+            </>
+          }
+          confirmLabel="Delete"
+          destructive
+          onConfirm={() => deleteFile(fileDialog.name)}
+          onClose={() => setFileDialog(null)}
+        />
+      )}
     </aside>
   );
 }

@@ -1,0 +1,107 @@
+// A singly linked list on the heap. Each node owns the rest of the list
+// through a `Box`, so dropping the head frees every node after it.
+//
+// `mem.replace` moves a value out of a field that has a destructor,
+// `when &node.next` borrows a node without taking it, and `Box.ptr()` gives
+// a raw pointer to the boxed value.
+import std.box.{Box, box}
+import std.mem
+
+type Node { val: int, next: Box[Node]? }
+
+type List { head: Box[Node]?, len: int }
+
+// The helpers take a `*Node`, so they look at the list without owning it.
+fn sum_from(n: *Node) int {
+    when &n.next {
+        Some(b) -> return n.val + sum_from(b.ptr())
+        null -> return n.val
+    }
+}
+
+fn show_from(n: *Node) {
+    print(" {n.val}", end: "")
+    when &n.next {
+        Some(b) -> show_from(b.ptr())
+        null -> {}
+    }
+}
+
+// Push on the way down: each value lands in front of the ones before it,
+// so the new list comes out reversed.
+fn reverse_into(n: *Node, out: *List) {
+    out.push(n.val)
+    when &n.next {
+        Some(b) -> reverse_into(b.ptr(), out)
+        null -> {}
+    }
+}
+
+extend List {
+    // The old head moves into the new node's `next` field.
+    fn push(mut self, v: int) {
+        old := mem.replace[Option[Box[Node]]](&self.head, null)
+        self.head = Some(box(Node(val: v, next: old)))
+        self.len += 1
+    }
+
+    fn is_empty(self) bool { return self.head.is_none() }
+
+    // Take the head out and let the rest of the list take its place; the
+    // popped node's box is dropped, freeing just that node.
+    fn pop(mut self) int? {
+        when &self.head {
+            Some(b) -> {
+                n := b.ptr()
+                v := n.val
+                self.head = mem.replace[Option[Box[Node]]](&n.next, null)
+                self.len -= 1
+                return Some(v)
+            }
+            null -> return null
+        }
+    }
+
+    fn sum(self) int {
+        when &self.head {
+            Some(b) -> return sum_from(b.ptr())
+            null -> return 0
+        }
+    }
+
+    fn show(self) {
+        print("list of {self.len}:", end: "")
+        when &self.head {
+            Some(b) -> show_from(b.ptr())
+            null -> {}
+        }
+        print("")
+    }
+
+    fn reversed(self) List {
+        out := List(head: null, len: 0)
+        when &self.head {
+            Some(b) -> reverse_into(b.ptr(), &out)
+            null -> {}
+        }
+        return out
+    }
+}
+
+fn main() int {
+    squares := List(head: null, len: 0)
+    for i in 1..6 { squares.push(i * i) }
+    squares.show()
+    print("sum {squares.sum()}")
+
+    backwards := squares.reversed()
+    backwards.show()
+
+    // Pop takes from the front, so empty the list from the back of the
+    // original order
+    while not squares.is_empty() {
+        print("popped {squares.pop() ?? -1}, {squares.len} left")
+    }
+    squares.show()
+    return 0
+}

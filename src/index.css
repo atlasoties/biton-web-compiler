@@ -1,1 +1,237 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
 @import "tailwindcss";
+
+/* Theme: everything is drawn from these tokens. `data-theme` on <html> is
+   set before first paint by public/theme-init.js (and by the toggle). */
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f1f3f6;
+  --surface-3: #e7eaef;
+  --hover: rgb(15 23 42 / 0.05);
+  --active: rgb(15 23 42 / 0.08);
+  --border: #e2e5ea;
+  --border-strong: #cfd4dc;
+  --text: #121826;
+  --text-muted: #4b5565;
+  --text-faint: #8a93a3;
+  --accent: #e8590c;
+  --accent-hover: #d9480f;
+  --accent-text: #ffffff;
+  --accent-soft: rgb(232 89 12 / 0.1);
+  --focus: rgb(232 89 12 / 0.45);
+  --run: #16a34a;
+  --run-hover: #15803d;
+  --danger: #dc2626;
+  --danger-soft: rgb(220 38 38 / 0.08);
+  --warning: #b45309;
+  --warning-soft: rgb(217 119 6 / 0.1);
+  --success: #16a34a;
+  --info: #2563eb;
+  --info-soft: rgb(37 99 235 / 0.08);
+  --shadow: 0 1px 2px rgb(15 23 42 / 0.06), 0 8px 24px rgb(15 23 42 / 0.08);
+  --overlay: rgb(15 23 42 / 0.35);
+
+  --editor-bg: #ffffff;
+  --editor-gutter: #ffffff;
+  --editor-line: rgb(15 23 42 / 0.035);
+  --editor-selection: rgb(232 89 12 / 0.16);
+  --editor-cursor: #121826;
+  --editor-match: rgb(232 89 12 / 0.14);
+  --line-number: #a4abb8;
+  --line-number-active: #3c4555;
+
+  --syn-keyword: #a626a4;
+  --syn-control: #a626a4;
+  --syn-type: #0e7490;
+  --syn-type-name: #b45309;
+  --syn-function: #2f5fd0;
+  --syn-string: #1a7f37;
+  --syn-escape: #0e7490;
+  --syn-interp: #d9480f;
+  --syn-number: #b45309;
+  --syn-literal: #c2410c;
+  --syn-comment: #8a93a3;
+  --syn-attribute: #7c3aed;
+  --syn-self: #c026d3;
+  --syn-path: #4b5565;
+  --syn-operator: #4b5565;
+  --syn-punct: #6b7280;
+  --syn-ident: #121826;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0d12;
+  --surface: #111419;
+  --surface-2: #161a21;
+  --surface-3: #1d222b;
+  --hover: rgb(255 255 255 / 0.05);
+  --active: rgb(255 255 255 / 0.08);
+  --border: #232833;
+  --border-strong: #303744;
+  --text: #e6e9ef;
+  --text-muted: #a3abb9;
+  --text-faint: #6c7584;
+  --accent: #ff8a3d;
+  --accent-hover: #ff9d5c;
+  --accent-text: #1a0d03;
+  --accent-soft: rgb(255 138 61 / 0.13);
+  --focus: rgb(255 138 61 / 0.5);
+  --run: #22c55e;
+  --run-hover: #4ade80;
+  --danger: #f87171;
+  --danger-soft: rgb(248 113 113 / 0.1);
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 0.1);
+  --success: #4ade80;
+  --info: #60a5fa;
+  --info-soft: rgb(96 165 250 / 0.1);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.45);
+  --overlay: rgb(0 0 0 / 0.55);
+
+  --editor-bg: #0e1116;
+  --editor-gutter: #0e1116;
+  --editor-line: rgb(255 255 255 / 0.03);
+  --editor-selection: rgb(255 138 61 / 0.22);
+  --editor-cursor: #ff8a3d;
+  --editor-match: rgb(255 138 61 / 0.16);
+  --line-number: #4a5261;
+  --line-number-active: #c3c9d4;
+
+  --syn-keyword: #c792ea;
+  --syn-control: #c792ea;
+  --syn-type: #5ccfe6;
+  --syn-type-name: #ffcb6b;
+  --syn-function: #82aaff;
+  --syn-string: #a5d6a7;
+  --syn-escape: #89ddff;
+  --syn-interp: #ff8a3d;
+  --syn-number: #f78c6c;
+  --syn-literal: #ff9e64;
+  --syn-comment: #5f6b7d;
+  --syn-attribute: #b39dff;
+  --syn-self: #f07178;
+  --syn-path: #89ddff;
+  --syn-operator: #89ddff;
+  --syn-punct: #8a94a6;
+  --syn-ident: #e6e9ef;
+}
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-fg: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-run: var(--run);
+  --color-run-hover: var(--run-hover);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-success: var(--success);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --shadow-pop: var(--shadow);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv11", "ss01";
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+/* Text fields draw their own focus border. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+}
+
+::selection {
+  background: var(--editor-selection);
+}
+
+/* Thin, theme-aware scrollbars everywhere. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+code, kbd, pre, .font-mono {
+  font-variant-ligatures: none;
+}
+
+/* Syntax colours for highlighted snippets outside the editor (reference panel). */
+.syn-keyword { color: var(--syn-keyword); font-weight: 500; }
+.syn-string { color: var(--syn-string); }
+.syn-escape { color: var(--syn-escape); }
+.syn-interp { color: var(--syn-interp); font-weight: 600; }
+.syn-number { color: var(--syn-number); }
+.syn-literal { color: var(--syn-literal); }
+.syn-type { color: var(--syn-type); }
+.syn-self { color: var(--syn-self); font-style: italic; }
+.syn-function { color: var(--syn-function); }
+.syn-typeName { color: var(--syn-type-name); }
+.syn-ident { color: var(--syn-ident); }
+.syn-path { color: var(--syn-path); }
+.syn-arrow { color: var(--syn-operator); }
+.syn-attribute { color: var(--syn-attribute); }
+.syn-operator { color: var(--syn-operator); }
+.syn-punct { color: var(--syn-punct); }
+.syn-comment { color: var(--syn-comment); font-style: italic; }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.animate-pop { animation: fade-in 120ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

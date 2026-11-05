@@ -15,9 +15,26 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      // Never inline fonts as data: URLs: the CSP only allows fonts from 'self'.
+      assetsInlineLimit: (file: string) => (/\.(woff2?|ttf|otf)$/.test(file) ? false : undefined),
+      rollupOptions: {
+        output: {
+          // Vendor code changes rarely; separate chunks stay cached across deploys.
+          manualChunks(id: string) {
+            if (/node_modules\/(@codemirror|@lezer|crelt|style-mod|w3c-keyname)\//.test(id)) return "codemirror";
+            if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return "react";
+            if (id.includes("node_modules/lucide-react/")) return "icons";
+          },
+        },
+      },
+    },
     server: {
       proxy: {
-        '/api': API_TARGET,
+        // Keep the browser's Host header (the string shorthand would rewrite
+        // it): in development the API derives its own origin from Host, and
+        // checks that sign-in and compile requests come from that origin.
+        '/api': { target: API_TARGET, changeOrigin: false },
       },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       hmr: process.env.DISABLE_HMR !== 'true',

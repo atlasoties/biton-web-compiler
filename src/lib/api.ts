@@ -1,4 +1,11 @@
-import type { CompileRequest, CompileResponse, HealthResponse } from "../../shared/api.ts";
+import {
+  SIGNIN_REQUIRED,
+  type AuthStatus,
+  type AuthUser,
+  type CompileRequest,
+  type CompileResponse,
+  type HealthResponse,
+} from "../../shared/api.ts";
 
 // Empty means same origin: in development Vite proxies /api to the compile
 // server (see vite.config.ts); in production the server serves the frontend.
@@ -14,6 +21,9 @@ export class RateLimitError extends Error {
   }
 }
 
+/** HTTP 401: running programs needs a signed-in user (or the session expired). */
+export class SignInRequiredError extends Error {}
+
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, init);
   const text = await res.text();
@@ -27,6 +37,9 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
     const b = body as { error?: string; retryAfter?: number } | undefined;
     const retryAfter = Number(res.headers.get("Retry-After")) || b?.retryAfter || 5;
     throw new RateLimitError(b?.error || `rate limit reached; try again in ${retryAfter} s`, retryAfter);
+  }
+  if (res.status === 401 && (body as { code?: string } | undefined)?.code === SIGNIN_REQUIRED) {
+    throw new SignInRequiredError((body as { error?: string }).error || "sign in to run programs");
   }
   if (!res.ok) {
     const msg = (body as { error?: string } | undefined)?.error;
@@ -43,6 +56,35 @@ export function compile(req: CompileRequest, signal?: AbortSignal): Promise<Comp
     body: JSON.stringify(req),
     signal,
   });
+}
+
+const postJson = (body: unknown, signal?: AbortSignal): RequestInit => ({
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+  signal,
+});
+
+export function getSession(signal?: AbortSignal): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/auth/session", { method: "GET", signal });
+}
+
+/** `devLink`: the sign-in link itself, from a development server without a mail server. */
+export function sendSignInEmail(email: string): Promise<{ ok: true; devLink?: string }> {
+  return request("/api/auth/email", postJson({ email }));
+}
+
+export async function redeemSignInLink(token: string): Promise<AuthUser> {
+  return (await request<{ user: AuthUser }>("/api/auth/email/verify", postJson({ token }))).user;
+}
+
+export function signOut(): Promise<{ ok: true }> {
+  return request("/api/auth/logout", postJson({}));
+}
+
+/** Where to send the browser to sign in with Google; it comes back to `returnTo`. */
+export function googleSignInUrl(returnTo = "/#signed-in"): string {
+  return `${API_BASE}/api/auth/google?return=${encodeURIComponent(returnTo)}`;
 }
 
 export function health(signal?: AbortSignal): Promise<HealthResponse> {

@@ -4,17 +4,25 @@
 #
 #   scripts/security-check.sh [http://127.0.0.1:8080]
 #
-# Every program calls libc `system()` through ~>extern("C"), which any user
-# can do, so this checks what a shell inside a job can reach.
+# Every program runs a shell command through std.process.run, which any
+# user can do, so this checks what a shell inside a job can reach.
 set -uo pipefail
 API="${1:-http://127.0.0.1:8080}"
 fail=0
+command -v jq >/dev/null || { echo "needs jq" >&2; exit 2; }
 
 # run <shell command> -> prints JSON {exit, signal, timedOut, truncated, out}
 # Waits and retries when the API's rate limit answers 429.
 run() {
   local body headers status wait
-  body="$(jq -n --arg c "$1" '{mode: "run", code: ("~>extern(\"C\")\ndef system(cmd: string) => int;\ndef main() => int { system(\"" + ($c | gsub("\""; "\\\"")) + "\"); give 0; }")}')"
+  # The command goes into a Biton string literal: escape \ " and the
+  # interpolation braces.
+  body="$(jq -n --arg c "$1" '{
+    mode: "run",
+    code: ("import std.process.{run}\n\nfn main() int {\n    r := run(\""
+           + ($c | gsub("\\\\"; "\\\\") | gsub("\""; "\\\"") | gsub("\\{"; "\\{") | gsub("\\}"; "\\}") | gsub("\n"; "\\n"))
+           + "\")\n    return 0\n}\n")
+  }')"
   for _ in 1 2 3 4 5 6; do
     headers="$(mktemp)"
     out="$(curl -s --max-time 30 -D "$headers" "$API/api/compile" -H 'content-type: application/json' -d "$body")"
@@ -25,7 +33,7 @@ run() {
     echo "      (rate limited, waiting ${wait:-5}s)" >&2
     sleep "${wait:-5}"
   done
-  echo "$out" | jq -c '{exit: .run.exitCode, signal: .run.signal, timedOut: .run.timedOut, truncated: .run.truncated, out: ((.run.stdout // "") + (.run.stderr // "") + (.compilerOutput // "") + (.error // ""))}'
+  echo "$out" | jq -c '{exit: .run.exitCode, signal: .run.signal, timedOut: .run.timedOut, truncated: .run.truncated, out: ((.run.stdout // "") + (.run.stderr // "") + (.compilerOutput // "") + ([.diagnostics[]?.rendered] | join("\n")) + (.error // ""))}'
 }
 
 check() { # name, command, jq condition on the result
@@ -39,6 +47,10 @@ check() { # name, command, jq condition on the result
   fi
 }
 
+# Lists the command lines of every process visible to the job (no ps in the image).
+procs='for p in /proc/[0-9]*; do tr "\0" " " < $p/cmdline 2>/dev/null; echo; done'
+
+check "programs run at all"              'echo alive'                                         '.out | test("alive")'
 check "jobs do not run as root"          'id -u'                                              '.out | test("^0\\b") | not'
 check "no internet access"               'bash -c "exec 3<>/dev/tcp/1.1.1.1/443" && echo OPEN' '.out | test("OPEN") | not'
 check "no DNS"                           'getent hosts example.com && echo RESOLVED'          '.out | test("RESOLVED") | not'
@@ -50,8 +62,8 @@ check "process limit (fork bomb)"        'bash -c "f(){ f|f & }; f" >/dev/null 2
 check "slot usable after fork bomb"      'echo alive'                                         '.out | test("alive")'
 check "slot usable after fork bomb (2)"  'echo alive'                                         '.out | test("alive")'
 check "escaped process started"          'setsid sleep 300 </dev/null >/dev/null 2>&1 & echo started' '.out | test("started")'
-check "escaped process was killed"       'ps -eo cmd | grep "[s]leep 300" || echo clean'      '.out | test("clean")'
-check "escaped process was killed (2)"   'ps -eo cmd | grep "[s]leep 300" || echo clean'      '.out | test("clean")'
+check "escaped process was killed"       "$procs | grep -q '^sleep 300' && echo FOUND || echo clean" '.out | test("clean")'
+check "escaped process was killed (2)"   "$procs | grep -q '^sleep 300' && echo FOUND || echo clean" '.out | test("clean")'
 check "wall-clock timeout"               'sleep 60'                                           '.timedOut == true'
 check "output cap"                       'yes'                                                '.truncated == true'
 

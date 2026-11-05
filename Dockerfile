@@ -23,7 +23,9 @@ RUN npm run build
 # ── web (API) ───────────────────────────────────────────────────────────
 FROM ${NODE_IMAGE} AS web
 WORKDIR /app
-COPY package.json ./
+COPY package.json package-lock.json ./
+# Only the server's runtime dependencies (nodemailer, for sign-in emails).
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY server ./server
 COPY shared ./shared
 COPY --from=frontend /app/dist ./dist

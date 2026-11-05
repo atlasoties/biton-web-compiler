@@ -1,27 +1,15 @@
 // Parse the diagnostics `biton --no-color` prints to stderr.
-//
-// The format comes from DiagnosticsEngine::render_one in the biton repo
-// (lib/exceptions/src/Diagnostic.cpp):
-//
-//   error[E0200]: undefined identifier 'nope'
-//    --> main.bit:5:13
-//      |
-//    5 |     def y = nope + 1;
-//      |             ^^^^ optional label
-//    = note: ...
-//    = help: ...
-//   <blank line>
-//
-// followed at the end by "error: aborting due to N errors".
 
 import type { Diagnostic, Severity } from "../shared/api.ts";
 
-const HEADER = /^(error|warning|note|help|fatal)\[([A-Z0-9?]+)\]: (.*)$/;
+const HEADER_OLD = /^(error|warning|note|help|fatal)\[([A-Z0-9?]+)\]: (.*)$/;
+const HEADER_NEW = /^(error|warning|note|help|fatal): (.*)$/;
 const LOCATION = /^\s*--> (.*):(\d+):(\d+)$/;
 const SOURCE_ROW = /^\s*\d+ \| /;
 const CARET_ROW = /^\s*\| ( *)(\^+)(?: (.*))?$/;
 const TRAILER = /^\s*= (note|help): (.*)$/;
-const SUMMARY = /^(error|fatal): aborting due to /;
+const SUMMARY_OLD = /^(error|fatal): aborting due to /;
+const SUMMARY_NEW = /^(error|fatal): could not compile/;
 const SUPPRESSED = /^note: \d+ further diagnostic/;
 
 // eslint-disable-next-line no-control-regex
@@ -52,26 +40,47 @@ export function parseDiagnostics(stderr: string): ParsedOutput {
   };
 
   for (const line of lines) {
-    const header = HEADER.exec(line);
+    if (SUMMARY_OLD.test(line) || SUMMARY_NEW.test(line)) {
+      finish();
+      continue;
+    }
+
+    const headerOld = HEADER_OLD.exec(line);
+    const headerNew = HEADER_NEW.exec(line);
+    const header = headerOld || headerNew;
     if (header) {
       finish();
-      cur = {
-        severity: header[1] as Severity,
-        code: header[2].includes("?") ? null : header[2],
-        message: header[3],
-        file: null,
-        line: 0,
-        col: 0,
-        endCol: 0,
-        notes: [],
-        rendered: "",
-      };
+      if (headerOld) {
+        cur = {
+          severity: headerOld[1] as Severity,
+          code: headerOld[2].includes("?") ? null : headerOld[2],
+          message: headerOld[3],
+          file: null,
+          line: 0,
+          col: 0,
+          endCol: 0,
+          notes: [],
+          rendered: "",
+        };
+      } else if (headerNew) {
+        cur = {
+          severity: headerNew[1] as Severity,
+          code: null,
+          message: headerNew[2],
+          file: null,
+          line: 0,
+          col: 0,
+          endCol: 0,
+          notes: [],
+          rendered: "",
+        };
+      }
       renderedLines.push(line);
       continue;
     }
 
     if (!cur) {
-      if (line.trim() && !SUMMARY.test(line) && !SUPPRESSED.test(line)) other.push(line);
+      if (line.trim() && !SUMMARY_OLD.test(line) && !SUMMARY_NEW.test(line) && !SUPPRESSED.test(line)) other.push(line);
       continue;
     }
 

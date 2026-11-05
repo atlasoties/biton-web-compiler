@@ -1,10 +1,11 @@
-// Compile, check, emit and run Biton programs with the real compiler.
+// Compile, check, emit, format and run Biton programs with the real compiler.
 // Both the compiler and the program run inside the job sandbox.
 
 import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { CompileRequest, CompileResponse, RunResult } from "../shared/api.ts";
+import type { CompileRequest, CompileResponse, HealthResponse, RunResult } from "../shared/api.ts";
 import { config } from "./config.ts";
 import { parseDiagnostics } from "./diagnostics.ts";
 import { exec } from "./exec.ts";
@@ -23,6 +24,17 @@ export function compilerVersion(): string {
   return r.stdout.trim();
 }
 
+/** The limits clients are told about in the health response. */
+export function publicLimits(): HealthResponse["limits"] {
+  return {
+    runTimeoutMs: config.runTimeoutMs,
+    compileTimeoutMs: config.compileTimeoutMs,
+    maxOutputBytes: config.maxOutputBytes,
+    maxSourceBytes: config.maxSourceBytes,
+    maxStdinBytes: config.maxStdinBytes,
+  };
+}
+
 function compilerEnv(dir: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
@@ -31,6 +43,7 @@ function compilerEnv(dir: string): NodeJS.ProcessEnv {
     LANG: "C.UTF-8",
   };
   if (config.bitonHome) env.BITON_SOURCE_DIR = config.bitonHome;
+  // The compiler finds its standard library in $BITON_SOURCE_DIR/stdlib.
   // Lets a sanitizer build of the compiler be used in development.
   if (process.env.ASAN_OPTIONS) env.ASAN_OPTIONS = process.env.ASAN_OPTIONS;
   return env;
@@ -51,7 +64,15 @@ export async function runJob(req: CompileRequest, signal?: AbortSignal): Promise
   const slot = await slots.acquire(signal);
   let job: Job | null = null;
   try {
-    job = await createJob(slot, { [SOURCE_NAME]: req.code });
+    const files: Record<string, string> = { [SOURCE_NAME]: req.code };
+    if (req.files) {
+      for (const [name, content] of Object.entries(req.files)) {
+        if (name && content !== undefined) {
+          files[name] = content;
+        }
+      }
+    }
+    job = await createJob(slot, files);
     return await compileAndRun(job, req, signal);
   } finally {
     if (job) await destroyJob(job).catch((e) => console.error("job cleanup failed:", e));
@@ -60,6 +81,7 @@ export async function runJob(req: CompileRequest, signal?: AbortSignal): Promise
 }
 
 async function compileAndRun(job: Job, req: CompileRequest, signal?: AbortSignal): Promise<CompileResponse> {
+  if (req.mode === "format") return format(job, signal);
   const args = ["--no-color"];
   for (const inc of config.includeDirs) args.push("-I", inc);
   if (req.mode === "run" || (req.mode === "emit" && req.emit === "ir")) args.push(`-${req.opt ?? "O2"}`);
@@ -68,6 +90,34 @@ async function compileAndRun(job: Job, req: CompileRequest, signal?: AbortSignal
   if (req.mode === "run") args.push("-o", PROGRAM_NAME);
   args.push(SOURCE_NAME);
 
+  const c = await runCompiler(job, args, signal);
+  const { diagnostics, other } = parseDiagnostics(c.stderr);
+  const compilerOutput = compilerNote(c) + other;
+  const compiled = c.exitCode === 0 && !c.timedOut;
+
+  const response: CompileResponse = {
+    success: compiled,
+    mode: req.mode,
+    failedAt: compiled ? null : "compile",
+    diagnostics,
+    compilerOutput: compilerOutput.trim(),
+    compileTimeMs: c.ms,
+  };
+  if (req.mode === "emit") response.emitted = c.stdout;
+  if (!compiled || req.mode !== "run") return response;
+
+  response.run = await runProgram(job, req.stdin, req.args ?? [], signal);
+  // A non-zero exit code is a legitimate result in Biton (`main`'s return
+  // value), so only crashes, kills and timeouts count as a failed run.
+  if (response.run.timedOut || response.run.signal) {
+    response.success = false;
+    response.failedAt = "run";
+  }
+  return response;
+}
+
+/** Run the compiler in the job; its stderr has the job directory removed from paths. */
+async function runCompiler(job: Job, args: string[], signal?: AbortSignal) {
   const [cmd, cmdArgs] = limited(config.bitonBin, args, {
     memoryBytes: config.compileMemoryBytes,
     cpuSeconds: Math.ceil(config.compileTimeoutMs / 1000) + 1,
@@ -83,38 +133,41 @@ async function compileAndRun(job: Job, req: CompileRequest, signal?: AbortSignal
     signal,
   });
   if (c.aborted) throw new CancelledError("cancelled");
-
   // Show the buffer as "main.bit" rather than the job directory.
-  const stderr = c.stderr.split(job.dir + path.sep).join("");
-  const { diagnostics, other } = parseDiagnostics(stderr);
-  let compilerOutput = other;
-  if (c.timedOut) compilerOutput = `compiler timed out after ${config.compileTimeoutMs} ms\n${compilerOutput}`;
-  else if (c.signal) compilerOutput = `compiler was killed by ${c.signal} (resource limit?)\n${compilerOutput}`;
-  const compiled = c.exitCode === 0 && !c.timedOut;
+  c.stderr = c.stderr.split(job.dir + path.sep).join("");
+  c.stdout = c.stdout.split(job.dir + path.sep).join("");
+  return c;
+}
 
+function compilerNote(c: { timedOut: boolean; signal: string | null }): string {
+  if (c.timedOut) return `compiler timed out after ${config.compileTimeoutMs} ms\n`;
+  if (c.signal) return `compiler was killed by ${c.signal} (resource limit?)\n`;
+  return "";
+}
+
+/**
+ * `biton fmt main.bit`, which formats the file in place. It leaves a file
+ * it cannot format (one that does not parse) as it was, so `formatted`
+ * is then the input.
+ */
+async function format(job: Job, signal?: AbortSignal): Promise<CompileResponse> {
+  const c = await runCompiler(job, ["fmt", SOURCE_NAME], signal);
+  const ok = c.exitCode === 0 && !c.timedOut;
+  const { diagnostics, other } = parseDiagnostics(c.stderr);
   const response: CompileResponse = {
-    success: compiled,
-    mode: req.mode,
-    failedAt: compiled ? null : "compile",
+    success: ok,
+    mode: "format",
+    failedAt: ok ? null : "compile",
     diagnostics,
-    compilerOutput: compilerOutput.trim(),
+    compilerOutput: (compilerNote(c) + other).trim(),
     compileTimeMs: c.ms,
   };
-  if (req.mode === "emit") response.emitted = c.stdout;
-  if (!compiled || req.mode !== "run") return response;
-
-  response.run = await runProgram(job, req.stdin, signal);
-  // A non-zero exit code is a legitimate result in Biton (`main`'s return
-  // value), so only crashes, kills and timeouts count as a failed run.
-  if (response.run.timedOut || response.run.signal) {
-    response.success = false;
-    response.failedAt = "run";
-  }
+  if (ok) response.formatted = await readFile(path.join(job.dir, SOURCE_NAME), "utf8");
   return response;
 }
 
-async function runProgram(job: Job, stdin: string | undefined, signal?: AbortSignal): Promise<RunResult> {
-  const [cmd, args] = limited(path.join(job.dir, PROGRAM_NAME), [], {
+async function runProgram(job: Job, stdin: string | undefined, programArgs: string[], signal?: AbortSignal): Promise<RunResult> {
+  const [cmd, args] = limited(path.join(job.dir, PROGRAM_NAME), programArgs, {
     memoryBytes: config.runMemoryBytes,
     cpuSeconds: Math.ceil(config.runTimeoutMs / 1000) + 1,
     fileSizeBytes: config.maxOutputBytes,

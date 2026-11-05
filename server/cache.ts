@@ -1,5 +1,5 @@
-// In-memory LRU cache for deterministic results (type checks and --emit
-// output), bounded by approximate size in bytes. Program runs are never
+// In-memory LRU cache for deterministic results (type checks, --emit
+// output and formatting), bounded by approximate size in bytes. Program runs are never
 // cached: a program may read the clock, its input or the environment.
 
 import { createHash } from "node:crypto";
@@ -19,7 +19,7 @@ export class ResultCache {
   }
 
   static cacheable(req: CompileRequest): boolean {
-    return req.mode === "check" || req.mode === "emit";
+    return req.mode === "check" || req.mode === "emit" || req.mode === "format";
   }
 
   /** The compiler version is part of the key, so an upgrade never serves stale output. */

@@ -1,5 +1,5 @@
 {
   "name": "Biton Web Compiler",
-  "description": "A web editor for the Biton systems language. Code is compiled to native code by the real biton compiler on a server and run in a sandbox; diagnostics, output and every IR stage (tokens, AST, HIR, MIR, LLVM IR) are shown in the browser.",
+  "description": "A web editor for the Biton systems language, with Google and email sign-in. Code is compiled to native code by the real biton compiler on a server and run in a sandbox; diagnostics, output and every IR stage (tokens, AST, HIR, MIR, LLVM IR) are shown in the browser.",
   "requestFramePermissions": []
 }

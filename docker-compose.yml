@@ -7,6 +7,9 @@
 #
 #   scripts/stage-compiler.sh ../biton
 #   echo "WORKER_TOKEN=$(openssl rand -hex 32)" > .env
+#   echo "AUTH_SECRET=$(openssl rand -hex 32)" >> .env
+#   echo "PUBLIC_URL=https://biton.example.com" >> .env
+#   # and GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET and/or SMTP_URL/EMAIL_FROM (.env.example)
 #   docker compose up -d --build
 #
 # Stronger isolation: install gVisor and set WORKER_RUNTIME=runsc in .env.
@@ -32,6 +35,15 @@ services:
       RATE_CHECK_PER_MIN: ${RATE_CHECK_PER_MIN:-120}
       RATE_CHECK_BURST: ${RATE_CHECK_BURST:-40}
       RATE_MAX_INFLIGHT: ${RATE_MAX_INFLIGHT:-3}
+      # Sign-in (the web container reaches Google and the SMTP server).
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env}
+      REQUIRE_SIGNIN_TO_RUN: ${REQUIRE_SIGNIN_TO_RUN:-1}
+      SESSION_DAYS: ${SESSION_DAYS:-30}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      SMTP_URL: ${SMTP_URL:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
     networks: [public, jobs]
     read_only: true
     cap_drop: [ALL]

@@ -1,13 +1,17 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Write, run and inspect Biton programs in the browser, compiled to native code by the real biton compiler." />
+    <meta name="theme-color" content="#111419" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ff8a3d'/%3E%3Cpath d='M9 10h7.5a4 4 0 0 1 0 8H9zm0 8h8.5a4 4 0 0 1 0 8H9z' fill='none' stroke='%231a0d03' stroke-width='2.6' stroke-linejoin='round'/%3E%3C/svg%3E" />
     <title>Biton Web Compiler</title>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

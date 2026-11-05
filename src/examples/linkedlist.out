@@ -1,0 +1,9 @@
+list of 5: 25 16 9 4 1
+sum 55
+list of 5: 1 4 9 16 25
+popped 25, 4 left
+popped 16, 3 left
+popped 9, 2 left
+popped 4, 1 left
+popped 1, 0 left
+list of 0:
